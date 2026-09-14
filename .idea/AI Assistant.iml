@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<module type="JAVA_MODULE" version="4">
+  <component name="NewModuleRootManager" inherit-compiler-output="true">
+    <exclude-output />
+    <content url="file://$MODULE_DIR$">
+      <excludeFolder url="file://$MODULE_DIR$/build/GD_Assistant/localpycs" />
+      <excludeFolder url="file://$MODULE_DIR$/build/main/localpycs" />
+      <excludeFolder url="file://$MODULE_DIR$/dist/main/_internal/PIL" />
+      <excludeFolder url="file://$MODULE_DIR$/dist/main/_internal/aiohttp" />
+      <excludeFolder url="file://$MODULE_DIR$/dist/main/_internal/av" />
+      <excludeFolder url="file://$MODULE_DIR$/dist/main/_internal/charset_normalizer" />
+      <excludeFolder url="file://$MODULE_DIR$/dist/main/_internal/cryptography" />
+      <excludeFolder url="file://$MODULE_DIR$/dist/main/_internal/frozenlist" />
+      <excludeFolder url="file://$MODULE_DIR$/dist/main/_internal/hf_xet" />
+      <excludeFolder url="file://$MODULE_DIR$/dist/main/_internal/multidict" />
+      <excludeFolder url="file://$MODULE_DIR$/dist/main/_internal/numpy" />
+      <excludeFolder url="file://$MODULE_DIR$/dist/main/_internal/propcache" />
+      <excludeFolder url="file://$MODULE_DIR$/dist/main/_internal/psutil" />
+      <excludeFolder url="file://$MODULE_DIR$/dist/main/_internal/pydantic_core" />
+      <excludeFolder url="file://$MODULE_DIR$/dist/main/_internal/tokenizers" />
+      <excludeFolder url="file://$MODULE_DIR$/dist/main/_internal/websockets" />
+      <excludeFolder url="file://$MODULE_DIR$/dist/main/_internal/win32" />
+      <excludeFolder url="file://$MODULE_DIR$/dist/main/_internal/yaml" />
+      <excludeFolder url="file://$MODULE_DIR$/dist/main/_internal/yarl" />
+    </content>
+    <orderEntry type="jdk" jdkName="~\AppData\Local\Python\pythoncore-3.14-64\python.exe" jdkType="Python SDK" />
+    <orderEntry type="sourceFolder" forTests="false" />
+  </component>
+</module>
