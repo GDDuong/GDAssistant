@@ -25,6 +25,10 @@ from PIL import ImageGrab
 import pyautogui
 import psutil
 from PIL import Image, ImageDraw, ImageFont
+import requests
+from bs4 import BeautifulSoup
+from ddgs import DDGS
+import pyperclip
 
 # Every key is a user-friendly name. Values are fixed executables, never
 # model-provided paths, arguments, or commands.
@@ -498,3 +502,97 @@ def confirm_action(action_description: str) -> bool:
         buttons=["Allow", "Block"]
     )
     return response == "Allow"
+
+def search_and_read_webpage(query: str) -> dict[str, str]:
+    """Search the web for any query, pick the top result URL, and scrape its main text content."""
+    if not isinstance(query, str) or not query.strip():
+        return {"status": "FAILURE", "message": "Search query cannot be empty."}
+
+    try:
+        # 1. Perform the text search to find the most relevant URL
+        with DDGS() as ddgs:
+            results = list(ddgs.text(query.strip(), max_results=3))
+            if not results:
+                return {"status": "SUCCESS", "message": f"No web search results found for '{query}'."}
+
+            target_url = results[0].get('href')
+            target_title = results[0].get('title')
+
+        if not target_url:
+            return {"status": "FAILURE", "message": "Could not extract a valid URL from search results."}
+
+        # 2. Fetch the target web page
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                          "AppleWebKit/537.36 (KHTML, like Gecko) "
+                          "Chrome/120.0.0.0 Safari/537.36"
+        }
+        response = requests.get(target_url, headers=headers, timeout=10)
+        response.raise_for_status()
+
+        # 3. Parse HTML and strip irrelevant boilerplate
+        soup = BeautifulSoup(response.text, "html.parser")
+        for element in soup(["script", "style", "nav", "footer", "header", "aside"]):
+            element.decompose()
+
+        page_text = soup.get_text(separator="\n", strip=True)
+
+        # Limit content length to prevent token overflow
+        max_chars = 7000
+        if len(page_text) > max_chars:
+            page_text = page_text[:max_chars] + "\n\n[Content truncated due to length...]"
+
+        return {
+            "status": "SUCCESS",
+            "message": (
+                f"Successfully read page content from search result:\n"
+                f"**Title**: {target_title}\n"
+                f"**URL**: {target_url}\n\n"
+                f"--- Page Content Start ---\n{page_text}\n--- Page Content End ---"
+            )
+        }
+    except Exception as error:
+        return {"status": "FAILURE", "message": f"Failed to search and read webpage: {error}"}
+
+def read_clipboard() -> dict[str, str]:
+    """Read text currently stored in the system clipboard."""
+    try:
+        content = pyperclip.paste()
+        if not content:
+            return {"status": "SUCCESS", "message": "The clipboard is currently empty."}
+        return {"status": "SUCCESS", "message": f"Clipboard content:\n\n{content}"}
+    except Exception as e:
+        return {"status": "FAILURE", "message": f"Failed to read clipboard: {e}"}
+
+
+def write_clipboard(text: str) -> dict[str, str]:
+    """Write text to the system clipboard."""
+    try:
+        pyperclip.copy(text)
+        return {"status": "SUCCESS", "message": "Successfully copied text to clipboard."}
+    except Exception as e:
+        return {"status": "FAILURE", "message": f"Failed to write to clipboard: {e}"}
+
+
+def read_local_file(file_path: str) -> dict[str, str]:
+    """Read the text content of a local file safely (under 500KB)."""
+    if not isinstance(file_path, str) or not file_path.strip():
+        return {"status": "FAILURE", "message": "File path cannot be empty."}
+
+    clean_path = file_path.strip('"').strip("'")
+    if not os.path.exists(clean_path):
+        return {"status": "FAILURE", "message": f"File not found: {clean_path}"}
+
+    try:
+        if os.path.getsize(clean_path) > 500 * 1024:
+            return {"status": "FAILURE", "message": "File is too large to read safely (>500KB)."}
+
+        with open(clean_path, "r", encoding="utf-8", errors="ignore") as f:
+            content = f.read()
+
+        return {
+            "status": "SUCCESS",
+            "message": f"Content of {os.path.basename(clean_path)}:\n\n{content}"
+        }
+    except Exception as e:
+        return {"status": "FAILURE", "message": f"Failed to read file: {e}"}

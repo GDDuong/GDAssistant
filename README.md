@@ -77,6 +77,7 @@ Gemini can request a limited set of tools to interact with your computer. These 
 | `type_text` | Types text into the active application. |
 | `press_key` | Presses a keyboard key or shortcut. |
 | `scroll_screen` | Scrolls the screen up or down. |
+
 (This list is subject to change in the future.)
 
 ### 🔒 Security
