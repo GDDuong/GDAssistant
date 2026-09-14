@@ -1,51 +1,164 @@
 # GD Assistant v0.1.1-BETA
 
-A small Windows personal assistant: terminal or GUI text chat backed by Gemini, with a tightly controlled set of local actions.
+**GD Assistant** is a Windows personal desktop assistant powered by Google's Gemini API. It can chat with you, provide useful system information, remember information, open apps and files, and perform limited desktop actions.
 
-The current text model is `gemini-3.5-flash-lite`. It is configured for the available 500 requests/day and 250K tokens/minute quota shown in the project's Google AI Studio account. A future voice phase will use the Live API separately; Live models cannot replace this text endpoint directly.
+The assistant is designed with security restrictions so Gemini does not have unrestricted control over your computer.
 
-## Setup
+## ✨ Features
 
-Requires Python 3.10+ and a Gemini API key you create for yourself.
+### Core Overview
+
+- Powered by the **Gemini API** using Google's `google-genai` library.
+- Uses `gemini-3.5-flash-lite` by default.
+- Prevents multiple copies of GD Assistant from running at the same time.
+- Includes a simple **first-time setup wizard** for:
+  - Gemini API key
+  - AI model selection
+  - Global keyboard shortcut
+- Settings are stored locally in:
+
+```text
+%APPDATA%\GD Assistant\
+```
+
+### 🖥️ Interface & Modes
+
+GD Assistant can be used in several ways:
+
+**GUI Mode**  
+A normal Windows application with a chat window, message box, and voice controls.
+
+**System Tray**  
+GD Assistant can stay running in the background from the Windows system tray. From there you can reopen the assistant or exit it.
+
+**Command-Line Modes**
+
+```powershell
+python gd_assistant.py --console
+```
+
+Shows debugging information while the assistant runs.
+
+```powershell
+python gd_assistant.py --terminal
+```
+
+Runs GD Assistant entirely in the terminal.
+
+```powershell
+python gd_assistant.py --voice
+```
+
+Starts voice-only mode.
+
+```powershell
+python gd_assistant.py --firstboot
+```
+
+Runs the first-time setup wizard again.
+
+## 🛠️ Local Tools
+
+Gemini can request a limited set of tools to interact with your computer. These tools are controlled locally by GD Assistant rather than giving Gemini unrestricted PC access.
+
+| Tool | What it does |
+|---|---|
+| `open_app` | Opens approved Windows applications or configured custom programs. |
+| `close_app` | Closes approved applications after asking for confirmation. |
+| `open_file` | Opens files or folders using their normal Windows applications. |
+| `get_system_stats` | Shows CPU, memory, and disk usage. |
+| `search_files` | Searches for files by name inside your user folder. |
+| `open_url` | Opens safe `HTTP` or `HTTPS` links in your browser. |
+| `remember_info` | Saves information for GD Assistant to remember later. |
+| `forget_info` | Removes previously saved information. |
+| `get_all_memory` | Shows the information currently stored in memory. |
+| `take_screenshot` | Takes a screenshot with a coordinate grid to help with desktop actions. |
+| `click_at` | Clicks a specific location on the screen. |
+| `type_text` | Types text into the active application. |
+| `press_key` | Presses a keyboard key or shortcut. |
+| `scroll_screen` | Scrolls the screen up or down. |
+(This list is subject to change in the future.)
+
+### 🔒 Security
+
+Desktop-control tools are protected by safety checks and restrictions. GD Assistant does **not** simply give Gemini full control of Windows.
+
+For example, applications that can be launched are restricted, URLs are limited to web protocols, and potentially disruptive actions such as closing applications require user confirmation.
+
+## 🧠 Persistent Memory
+
+GD Assistant can remember information between sessions.
+
+Memory is stored locally in:
+
+```text
+memory.json
+```
+
+You can add, remove, or view saved information using the memory tools.
+
+This allows the assistant to remember useful preferences or details without relying entirely on the current conversation.
+
+## 🎙️ Voice System
+
+GD Assistant supports both **voice input** and **voice responses**.
+
+### Speech-to-Text
+
+Voice input uses **faster-whisper** with the `small.en` model running on the CPU.
+
+It automatically:
+
+- Calibrates for the room's background noise.
+- Detects when you start and stop speaking.
+- Converts your speech into text for Gemini.
+
+### Text-to-Speech
+
+Voice responses use **Microsoft Edge TTS** with the `en-US-AvaNeural` voice.
+
+Audio is played through Windows' native audio system, with `pyttsx3` used as a fallback if Edge TTS is unavailable.
+
+## 📦 Installation
+
+### Requirements
+
+- Windows
+- Python 3.10+
+- A Gemini API key
+
+Create a virtual environment and install the required packages:
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
+```
+
+Then start GD Assistant:
+
+```powershell
 python gd_assistant.py
 ```
 
-Open `api.json` and replace the empty value with your Gemini API key. The file is ignored by Git and is never printed by the application. You may alternatively set `GEMINI_API_KEY` for the current PowerShell session; that takes precedence over `api.json`. Type `/quit` to leave the chat.
+On the first launch, the setup wizard will guide you through the required configuration.
 
-## Starting it on Windows
+## 🔑 Gemini API Key
 
-After adding your key, double-click [Start GD Assistant.bat](<Start GD Assistant.bat>) to open the clean chat UI. Use [Start GD Assistant Console.bat](<Start GD Assistant Console.bat>) for the UI plus a separate debug console. The console records local tool requests and their authoritative `SUCCESS`/`FAILURE` outcome, while the chat window stays uncluttered. You can also run `python gd_assistant.py -console` from PowerShell. Use `--terminal` to return to the original terminal-only chat.
+Your Gemini API key is stored locally as part of GD Assistant's configuration.
 
-If a request says `ServerError`, the application is working but Gemini's service was temporarily unavailable. Wait a few seconds and send the message again; no local data or settings were changed.
+You can also use the `GEMINI_API_KEY` environment variable instead:
 
-## Local tools (Phase 2)
+```powershell
+$env:GEMINI_API_KEY="YOUR_API_KEY"
+```
 
-Gemini never gets unrestricted access to the PC. It can only *request* one of six approved tools; `gd_assistant.py` validates and executes the request, then reports the exact `SUCCESS`/`FAILURE` outcome back to Gemini before it replies to you.
+The environment variable takes priority over the locally stored API key.
 
-| Tool | What it does | Guardrails |
-| --- | --- | --- |
-| `open_app(app_name)` | Launches one allowlisted app | Fixed executable list, no shell, no arbitrary paths |
-| `close_app(app_name)` | Closes one allowlisted app via `taskkill /IM` | Same allowlist as `open_app`; matches by fixed image name only |
-| `get_system_stats()` | Reports CPU, memory, and disk usage | Read-only, no arguments |
-| `search_files(query)` | Finds files by name under the user's home folder | Confined to `%USERPROFILE%`; skips hidden/system/git folders; capped at 20 results and 20,000 entries scanned |
-| `open_url(url)` | Opens a link in the default browser | Only `http://`/`https://` accepted — `file://`, `javascript:`, etc. are rejected before anything runs |
-| `get_current_time()` | Returns the current local date/time | Read-only, no arguments |
+## 🚀 Project Status
 
-Both `open_app` and `close_app` accept only an allowlisted app — Notepad, Calculator, Paint, File Explorer, Snipping Tool, Task Manager, Control Panel, Character Map, Magnifier, or On-Screen Keyboard. App names, file paths, commands, and all other requests are rejected locally, before any process is touched.
+**Version:** `v0.1.1-BETA`
 
-Adding a new tool later means three small, localized edits: implement it in `local_tools.py`, add its declaration to `TOOL_DECLARATIONS`, and add one line to `TOOL_REGISTRY` in `gd_assistant.py` — the dispatch loop itself doesn't change.
+GD Assistant is currently a beta project. Features, supported tools, and security restrictions may change as development continues.
 
-## Design choices
-
-- `google-genai` is Google's current Python SDK; `psutil` backs `get_system_stats`.
-- One Gemini chat object preserves context during the current session.
-- Errors are shown as safe, actionable messages rather than raw API output.
-- `execute_tool_call` looks up the requested tool in `TOOL_REGISTRY` and also catches unexpected exceptions from a tool itself, so a bug in one tool can't crash the assistant — it just reports that tool as failed.
-- When a tool runs, the console (if enabled) first prints `LOCAL TOOL SUCCESS: ...` or `LOCAL TOOL FAILURE: ...`. This local confirmation is authoritative; Gemini receives the same exact result before it replies.
-- `search_files` treats a clean zero-result search as `SUCCESS` (the search ran fine) rather than `FAILURE` (which is reserved for the search itself not being able to run).
-- No arbitrary commands, file *modification*, mouse/keyboard control, screenshots, or persistent memory are included yet — those are later phases, and the plan calls for user confirmation before anything destructive is added.
+This project is vibe-coded using the use of Gemini with the help of me, a real developer.
