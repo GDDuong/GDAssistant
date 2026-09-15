@@ -1,4 +1,4 @@
-# GD Assistant v0.1.1-BETA
+# GD Assistant (currently in beta v0.2-BETA)
 
 **GD Assistant** is a Windows personal desktop assistant powered by Google's Gemini API. It can chat with you, provide useful system information, remember information, open apps and files, and perform limited desktop actions.
 
