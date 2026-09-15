@@ -10,7 +10,6 @@ The assistant is designed with security restrictions so Gemini does not have unr
 
 - Powered by the **Gemini API** using Google's `google-genai` library.
 - Uses `gemini-3.5-flash-lite` by default.
-- Prevents multiple copies of GD Assistant from running at the same time.
 - Includes a simple **first-time setup wizard** for:
   - Gemini API key
   - AI model selection
@@ -34,25 +33,25 @@ GD Assistant can stay running in the background from the Windows system tray. Fr
 **Command-Line Modes**
 
 ```powershell
-python gd_assistant.py --console
+gd_assistant.exe --console
 ```
 
 Shows debugging information while the assistant runs.
 
 ```powershell
-python gd_assistant.py --terminal
+gd_assistant.exe --terminal
 ```
 
 Runs GD Assistant entirely in the terminal.
 
 ```powershell
-python gd_assistant.py --voice
+gd_assistant.exe --voice
 ```
 
 Starts voice-only mode.
 
 ```powershell
-python gd_assistant.py --firstboot
+gd_assistant.exe --firstboot
 ```
 
 Runs the first-time setup wizard again.
@@ -93,7 +92,7 @@ GD Assistant can remember information between sessions.
 Memory is stored locally in:
 
 ```text
-memory.json
+%AppData%\GD Assistant\memory.json
 ```
 
 You can add, remove, or view saved information using the memory tools.
@@ -158,7 +157,7 @@ The environment variable takes priority over the locally stored API key.
 
 ## 🚀 Project Status
 
-**Version:** `v0.1.1-BETA`
+**Version:** `v0.2-BETA`
 
 GD Assistant is currently a beta project. Features, supported tools, and security restrictions may change as development continues.
 
