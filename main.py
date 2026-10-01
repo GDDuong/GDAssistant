@@ -14,9 +14,11 @@ from typing import Any, Callable
 import atexit
 import glob
 import tempfile
+import time
 
 from tray import TrayDaemon
 from translations import get_text
+from themes import get_theme
 
 from local_tools import (
     close_app,
@@ -39,15 +41,27 @@ from local_tools import (
 )
 
 APP_NAME = "GD Assistant"
-APP_VERSION = "v0.2-BETA"
+APP_VERSION = "v0.3-BETA"
 _active_root = None
 _active_hwnd = None
 _mutex_handle = None
 
 DEFAULT_MODEL = "gemini-3.5-flash-lite"
+DEFAULT_CODE_MODEL = "gemini-3.5-flash-lite"
 DEFAULT_HOTKEY = "ctrl+alt+g"
 DEFAULT_LANGUAGE = "en"
 DEFAULT_PERSONALITY = ""
+DEFAULT_THEME = "dark"
+COMMON_GEMINI_MODELS = (
+    "gemini-3.8-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3.1-pro-preview",
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+    "gemini-2.5-pro",
+)
 
 def get_system_instruction(personality: str) -> str:
     base = (
@@ -287,6 +301,9 @@ def log_debug(message: str) -> None:
 def load_app_config() -> dict[str, Any]:
     config = {
         "model": DEFAULT_MODEL,
+        "code_model": DEFAULT_CODE_MODEL,
+        "share_chat_code_model": True,
+        "theme": DEFAULT_THEME,
         "hotkey": DEFAULT_HOTKEY,
         "language": DEFAULT_LANGUAGE,
         "personality": DEFAULT_PERSONALITY
@@ -306,6 +323,13 @@ def save_app_config(config_data: dict[str, Any]) -> None:
     current.update(config_data)
     with CONFIG_PATH.open("w", encoding="utf-8") as f:
         json.dump(current, f, indent=4)
+
+
+def get_code_model(config: dict[str, Any], chat_model: str) -> str:
+    """Select the configured code model, optionally sharing the chat model."""
+    if config.get("share_chat_code_model", True):
+        return chat_model
+    return str(config.get("code_model", DEFAULT_CODE_MODEL)).strip() or DEFAULT_CODE_MODEL
 
 def get_api_key() -> str:
     environment_key = os.environ.get("GEMINI_API_KEY", "").strip()
@@ -620,86 +644,266 @@ def bring_to_foreground(hwnd: int) -> None:
     except Exception as e:
         log_debug(f"[FOCUS ERROR] {e}")
 
-def launch_chat_ui(client: Any, model: str = DEFAULT_MODEL, lang: str = "en", personality: str = "") -> None:
+def launch_chat_ui(
+    client: Any,
+    model: str = DEFAULT_MODEL,
+    lang: str = "en",
+    personality: str = "",
+    theme: str = DEFAULT_THEME,
+) -> None:
     global _active_root, _active_hwnd
     try:
         import tkinter as tk
-        from tkinter import scrolledtext, messagebox
+        from tkinter import scrolledtext, messagebox, ttk
     except ImportError as error:
         raise RuntimeError("Tkinter is required.") from error
 
     session = AssistantSession(client, model, personality)
     voice_app: Any = None
+    colors = get_theme(theme)
 
     root = tk.Tk()
     _active_root = root
     root.title(f"{APP_NAME} {APP_VERSION}")
     root.minsize(680, 500)
-    root.configure(padx=14, pady=14)
+    root.configure(padx=14, pady=14, bg=colors["background"])
 
-    menubar = tk.Menu(root)
-    file_menu = tk.Menu(menubar, tearoff=0)
+    # Windows draws a native ``root.config(menu=...)`` bar using the system
+    # colors, which is why it stayed white in Dark mode. Use an in-window
+    # bar instead, while retaining normal File/Mode dropdown behavior.
+    file_menu = tk.Menu(root, tearoff=0)
+    mode_menu = tk.Menu(root, tearoff=0)
+
+    def apply_ttk_theme(palette: dict[str, str]) -> None:
+        """Style editable Combobox controls and their popup lists on Windows."""
+        style = ttk.Style(root)
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+        style.configure(
+            "GDAssistant.TCombobox",
+            fieldbackground=palette["input"],
+            background=palette["button"],
+            foreground=palette["foreground"],
+            arrowcolor=palette["foreground"],
+            bordercolor=palette["border"],
+            lightcolor=palette["border"],
+            darkcolor=palette["border"],
+        )
+        style.map(
+            "GDAssistant.TCombobox",
+            fieldbackground=[("disabled", palette["panel"]), ("readonly", palette["input"])],
+            foreground=[("disabled", palette["muted"])],
+            selectbackground=[("readonly", palette["accent"])],
+            selectforeground=[("readonly", "#ffffff")],
+        )
+        root.option_add("*TCombobox*Listbox.background", palette["panel"])
+        root.option_add("*TCombobox*Listbox.foreground", palette["foreground"])
+        root.option_add("*TCombobox*Listbox.selectBackground", palette["accent"])
+        root.option_add("*TCombobox*Listbox.selectForeground", "#ffffff")
+
+    def apply_menu_theme(palette: dict[str, str]) -> None:
+        """Keep the File/Mode bar and dropdown menus on the chosen palette."""
+        for menu in (file_menu, mode_menu):
+            menu.configure(
+                bg=palette["panel"],
+                fg=palette["foreground"],
+                activebackground=palette["accent"],
+                activeforeground="#ffffff",
+                disabledforeground=palette["muted"],
+                bd=0,
+            )
+
+    apply_ttk_theme(colors)
+    apply_menu_theme(colors)
 
     def open_settings_dialog():
         settings_win = tk.Toplevel(root)
         settings_win.title(get_text("settings_title", lang))
-        settings_win.geometry("500x520")
+        settings_win.geometry("500x610")
         settings_win.resizable(False, False)
-        settings_win.configure(padx=20, pady=20)
+        settings_win.configure(padx=20, pady=20, bg=colors["background"])
         settings_win.transient(root)
         settings_win.grab_set()
 
-        tk.Label(settings_win, text=get_text("settings_title", lang), font=("Arial", 14, "bold")).pack(anchor="w", pady=(0, 10))
+        label_options = {"bg": colors["background"], "fg": colors["foreground"]}
+        entry_options = {
+            "bg": colors["input"],
+            "fg": colors["foreground"],
+            "insertbackground": colors["foreground"],
+            "highlightbackground": colors["border"],
+            "highlightcolor": colors["accent"],
+        }
+        apply_ttk_theme(colors)
+
+        tk.Label(settings_win, text=get_text("settings_title", lang), font=("Arial", 14, "bold"), **label_options).pack(anchor="w", pady=(0, 10))
         current_key = get_api_key()
         app_cfg = load_app_config()
 
-        tk.Label(settings_win, text=get_text("api_key_label", lang), font=("Arial", 9, "bold")).pack(anchor="w")
-        key_entry = tk.Entry(settings_win, width=60, show="*")
+        tk.Label(settings_win, text=get_text("api_key_label", lang), font=("Arial", 9, "bold"), **label_options).pack(anchor="w")
+        key_entry = tk.Entry(settings_win, width=60, show="*", **entry_options)
         key_entry.insert(0, current_key)
         key_entry.pack(anchor="w", pady=(3, 10))
 
-        tk.Label(settings_win, text=get_text("model_label", lang), font=("Arial", 9, "bold")).pack(anchor="w")
-        model_entry = tk.Entry(settings_win, width=60)
-        model_entry.insert(0, app_cfg.get("model", DEFAULT_MODEL))
+        tk.Label(settings_win, text="Chat model", font=("Arial", 9, "bold"), **label_options).pack(anchor="w")
+        model_entry = ttk.Combobox(
+            settings_win,
+            width=57,
+            values=COMMON_GEMINI_MODELS,
+            state="normal",
+            style="GDAssistant.TCombobox",
+        )
+        model_entry.set(app_cfg.get("model", DEFAULT_MODEL))
         model_entry.pack(anchor="w", pady=(3, 10))
 
-        tk.Label(settings_win, text=get_text("hotkey_label", lang), font=("Arial", 9, "bold")).pack(anchor="w")
-        hotkey_entry = tk.Entry(settings_win, width=60)
+        share_models_var = tk.BooleanVar(value=app_cfg.get("share_chat_code_model", True))
+        code_model_var = tk.StringVar(value=app_cfg.get("code_model", DEFAULT_CODE_MODEL))
+
+        share_models_check = tk.Checkbutton(
+            settings_win,
+            text="Use the same model for Chat and Code mode",
+            variable=share_models_var,
+            bg=colors["background"],
+            fg=colors["foreground"],
+            activebackground=colors["background"],
+            activeforeground=colors["foreground"],
+            selectcolor=colors["input"],
+        )
+        share_models_check.pack(anchor="w", pady=(0, 6))
+
+        tk.Label(settings_win, text="Code model", font=("Arial", 9, "bold"), **label_options).pack(anchor="w")
+        code_model_entry = ttk.Combobox(
+            settings_win,
+            width=57,
+            textvariable=code_model_var,
+            values=COMMON_GEMINI_MODELS,
+            state="normal",
+            style="GDAssistant.TCombobox",
+        )
+        code_model_entry.pack(anchor="w", pady=(3, 10))
+
+        def update_code_model_state() -> None:
+            code_model_entry.configure(state=tk.DISABLED if share_models_var.get() else tk.NORMAL)
+
+        share_models_check.configure(command=update_code_model_state)
+        update_code_model_state()
+
+        tk.Label(settings_win, text=get_text("hotkey_label", lang), font=("Arial", 9, "bold"), **label_options).pack(anchor="w")
+        hotkey_entry = tk.Entry(settings_win, width=60, **entry_options)
         hotkey_entry.insert(0, app_cfg.get("hotkey", DEFAULT_HOTKEY))
         hotkey_entry.pack(anchor="w", pady=(3, 10))
 
-        tk.Label(settings_win, text=get_text("personality_label", lang), font=("Arial", 9, "bold")).pack(anchor="w")
-        pers_text = tk.Text(settings_win, height=4, width=45)
+        tk.Label(settings_win, text=get_text("personality_label", lang), font=("Arial", 9, "bold"), **label_options).pack(anchor="w")
+        pers_text = tk.Text(settings_win, height=4, width=45, **entry_options)
         pers_text.insert("1.0", app_cfg.get("personality", ""))
         pers_text.pack(anchor="w", pady=(3, 10))
 
-        tk.Label(settings_win, text=get_text("language_label", lang), font=("Arial", 9, "bold")).pack(anchor="w")
         lang_var = tk.StringVar(value=app_cfg.get("language", "en"))
-        tk.Radiobutton(settings_win, text="English", variable=lang_var, value="en").pack(anchor="w")
-        tk.Radiobutton(settings_win, text="Tiếng Việt", variable=lang_var, value="vi").pack(anchor="w")
+        theme_var = tk.StringVar(value=app_cfg.get("theme", DEFAULT_THEME))
+        radio_options = {
+            "bg": colors["background"],
+            "fg": colors["foreground"],
+            "activebackground": colors["background"],
+            "activeforeground": colors["foreground"],
+            "selectcolor": colors["input"],
+        }
+        preference_row = tk.Frame(settings_win, bg=colors["background"])
+        preference_row.pack(fill=tk.X, pady=(0, 8))
+
+        language_group = tk.Frame(preference_row, bg=colors["background"])
+        language_group.pack(side=tk.LEFT, anchor="n", padx=(0, 55))
+        tk.Label(language_group, text=get_text("language_label", lang), font=("Arial", 9, "bold"), **label_options).pack(anchor="w")
+        tk.Radiobutton(language_group, text="English", variable=lang_var, value="en", **radio_options).pack(anchor="w")
+        tk.Radiobutton(language_group, text="Tiếng Việt", variable=lang_var, value="vi", **radio_options).pack(anchor="w")
+
+        appearance_group = tk.Frame(preference_row, bg=colors["background"])
+        appearance_group.pack(side=tk.LEFT, anchor="n")
+        tk.Label(appearance_group, text="Appearance", font=("Arial", 9, "bold"), **label_options).pack(anchor="w")
+        tk.Radiobutton(appearance_group, text="Dark", variable=theme_var, value="dark", **radio_options).pack(anchor="w")
+        tk.Radiobutton(appearance_group, text="Light", variable=theme_var, value="light", **radio_options).pack(anchor="w")
 
         def save_settings():
+            nonlocal model, session, code_panel, theme
             new_key = key_entry.get().strip()
             if not new_key:
                 messagebox.showerror("Error", get_text("err_empty_key", lang), parent=settings_win)
                 return
             save_api_key(new_key)
+            new_chat_model = model_entry.get().strip() or DEFAULT_MODEL
             save_app_config({
-                "model": model_entry.get().strip() or DEFAULT_MODEL,
+                "model": new_chat_model,
+                "code_model": code_model_var.get().strip() or DEFAULT_CODE_MODEL,
+                "share_chat_code_model": share_models_var.get(),
+                "theme": theme_var.get(),
                 "hotkey": hotkey_entry.get().strip() or DEFAULT_HOTKEY,
                 "personality": pers_text.get("1.0", tk.END).strip(),
                 "language": lang_var.get()
             })
+            # Apply the selected chat model now; a Code panel is rebuilt using
+            # the current share/separate-code-model choice on its next display.
+            model = new_chat_model
+            session = AssistantSession(client, model, pers_text.get("1.0", tk.END).strip())
+            theme = theme_var.get()
+            apply_chat_theme(theme)
+            code_was_visible = code_panel is not None and bool(code_panel.winfo_manager())
+            if code_panel is not None:
+                code_panel.destroy()
+                code_panel = None
+            if code_was_visible:
+                switch_to_code()
             messagebox.showinfo("Success", get_text("settings_saved_msg", lang), parent=settings_win)
             settings_win.destroy()
 
-        tk.Button(settings_win, text=get_text("btn_save", lang), command=save_settings, bg="#0078D7", fg="white", width=20).pack(anchor="e", pady=10)
+        tk.Button(
+            settings_win,
+            text=get_text("btn_save", lang),
+            command=save_settings,
+            bg=colors["accent"],
+            fg="#ffffff",
+            activebackground=colors["accent_active"],
+            activeforeground="#ffffff",
+            width=20,
+        ).pack(anchor="e", pady=10)
 
     file_menu.add_command(label=get_text("menu_settings", lang), command=open_settings_dialog)
     file_menu.add_separator()
     file_menu.add_command(label=get_text("menu_exit", lang), command=lambda: os._exit(0))
-    menubar.add_cascade(label=get_text("menu_file", lang), menu=file_menu)
-    root.config(menu=menubar)
+
+    mode_bar = tk.Frame(root, bg=colors["panel"], padx=4, pady=3)
+    mode_bar.pack(fill=tk.X, side=tk.TOP, pady=(0, 8))
+
+    def show_dropdown(menu: Any, button: Any) -> None:
+        """Open a reliable themed popup under one of the custom menu buttons."""
+        try:
+            menu.tk_popup(button.winfo_rootx(), button.winfo_rooty() + button.winfo_height())
+        finally:
+            menu.grab_release()
+
+    file_button = tk.Button(
+        mode_bar,
+        text=get_text("menu_file", lang),
+        command=lambda: show_dropdown(file_menu, file_button),
+        relief=tk.FLAT,
+        bg=colors["panel"],
+        fg=colors["foreground"],
+        activebackground=colors["button_active"],
+        activeforeground=colors["foreground"],
+        padx=10,
+    )
+    file_button.pack(side=tk.LEFT)
+    mode_button = tk.Button(
+        mode_bar,
+        text="Mode",
+        command=lambda: show_dropdown(mode_menu, mode_button),
+        relief=tk.FLAT,
+        bg=colors["panel"],
+        fg=colors["foreground"],
+        activebackground=colors["button_active"],
+        activeforeground=colors["foreground"],
+        padx=10,
+    )
+    mode_button.pack(side=tk.LEFT)
 
     root.update_idletasks()
     hwnd = root.winfo_id()
@@ -707,23 +911,64 @@ def launch_chat_ui(client: Any, model: str = DEFAULT_MODEL, lang: str = "en", pe
     root.protocol("WM_DELETE_WINDOW", root.withdraw)
     root.after(100, lambda: bring_to_foreground(_active_hwnd))
 
-    transcript = scrolledtext.ScrolledText(root, wrap=tk.WORD, state=tk.DISABLED)
+    chat_frame = tk.Frame(root, bg=colors["background"])
+    chat_frame.pack(fill=tk.BOTH, expand=True)
+
+    transcript = scrolledtext.ScrolledText(
+        chat_frame,
+        wrap=tk.WORD,
+        state=tk.DISABLED,
+        bg=colors["panel"],
+        fg=colors["foreground"],
+        insertbackground=colors["foreground"],
+        highlightbackground=colors["border"],
+        highlightcolor=colors["accent"],
+    )
     transcript.grid(row=0, column=0, columnspan=3, sticky="nsew")
 
-    message_box = tk.Entry(root)
+    message_box = tk.Entry(
+        chat_frame,
+        bg=colors["input"],
+        fg=colors["foreground"],
+        insertbackground=colors["foreground"],
+        highlightbackground=colors["border"],
+        highlightcolor=colors["accent"],
+    )
     message_box.grid(row=1, column=0, sticky="ew", pady=(12, 0))
 
-    send_button = tk.Button(root, text=get_text("btn_send", lang))
+    send_button = tk.Button(
+        chat_frame,
+        text=get_text("btn_send", lang),
+        bg=colors["accent"],
+        fg="#ffffff",
+        activebackground=colors["accent_active"],
+        activeforeground="#ffffff",
+    )
     send_button.grid(row=1, column=1, sticky="e", padx=(8, 0), pady=(12, 0))
 
-    mic_button = tk.Button(root, text=get_text("btn_voice", lang), width=12)
+    mic_button = tk.Button(
+        chat_frame,
+        text=get_text("btn_voice", lang),
+        width=12,
+        bg=colors["button"],
+        fg=colors["foreground"],
+        activebackground=colors["button_active"],
+        activeforeground=colors["foreground"],
+    )
     mic_button.grid(row=1, column=2, sticky="e", padx=(6, 0), pady=(12, 0))
 
     status = tk.StringVar(value=get_text("status_ready", lang))
-    tk.Label(root, textvariable=status, anchor="w").grid(row=2, column=0, columnspan=3, sticky="ew", pady=(6, 0))
+    status_label = tk.Label(
+        chat_frame,
+        textvariable=status,
+        anchor="w",
+        bg=colors["background"],
+        fg=colors["foreground"],
+    )
+    status_label.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(6, 0))
 
-    root.columnconfigure(0, weight=1)
-    root.rowconfigure(0, weight=1)
+    chat_frame.columnconfigure(0, weight=1)
+    chat_frame.rowconfigure(0, weight=1)
 
     def add_message(speaker: str, text: str) -> None:
         transcript.configure(state=tk.NORMAL)
@@ -736,6 +981,48 @@ def launch_chat_ui(client: Any, model: str = DEFAULT_MODEL, lang: str = "en", pe
         message_box.configure(state=state)
         send_button.configure(state=state)
         mic_button.configure(state=state)
+
+    def apply_chat_theme(theme_name: str) -> None:
+        """Apply the selected shared appearance to the active Chat widgets."""
+        nonlocal colors
+        colors = get_theme(theme_name)
+        root.configure(bg=colors["background"])
+        apply_ttk_theme(colors)
+        apply_menu_theme(colors)
+        mode_bar.configure(bg=colors["panel"])
+        for button in (file_button, mode_button):
+            button.configure(
+                bg=colors["panel"],
+                fg=colors["foreground"],
+                activebackground=colors["button_active"],
+                activeforeground=colors["foreground"],
+            )
+        chat_frame.configure(bg=colors["background"])
+        transcript.configure(
+            bg=colors["panel"],
+            fg=colors["foreground"],
+            insertbackground=colors["foreground"],
+            highlightbackground=colors["border"],
+            highlightcolor=colors["accent"],
+        )
+        message_box.configure(
+            bg=colors["input"],
+            fg=colors["foreground"],
+            insertbackground=colors["foreground"],
+            highlightbackground=colors["border"],
+            highlightcolor=colors["accent"],
+        )
+        send_button.configure(
+            bg=colors["accent"],
+            activebackground=colors["accent_active"],
+        )
+        mic_button.configure(
+            bg=colors["button"],
+            fg=colors["foreground"],
+            activebackground=colors["button_active"],
+            activeforeground=colors["foreground"],
+        )
+        status_label.configure(bg=colors["background"], fg=colors["foreground"])
 
     def perform_text_request(message: str) -> None:
         try:
@@ -803,6 +1090,72 @@ def launch_chat_ui(client: Any, model: str = DEFAULT_MODEL, lang: str = "en", pe
     mic_button.configure(command=start_voice_listening)
     message_box.bind("<Return>", submit_message)
 
+    # Chat and Code intentionally share one Tk root. Switching modes never
+    # starts a second GD Assistant process, so the single-instance guard stays
+    # meaningful and both modes can use the same configured API client.
+    code_panel: Any | None = None
+
+    def switch_to_chat() -> None:
+        if code_panel is not None:
+            code_panel.pack_forget()
+        chat_frame.pack(fill=tk.BOTH, expand=True)
+        root.title(f"{APP_NAME} {APP_VERSION} — Chat")
+        message_box.focus_set()
+
+    def switch_to_code() -> None:
+        nonlocal code_panel
+        chat_frame.pack_forget()
+        if code_panel is None:
+            from code_gui import CodeAgentPanel
+
+            current_config = load_app_config()
+            code_model = get_code_model(current_config, model)
+            code_panel = CodeAgentPanel(
+                root,
+                client,
+                model=code_model,
+                start_dir=os.getcwd(),
+                theme=theme,
+                debug=DEBUG_CONSOLE,
+            )
+        code_panel.pack(fill=tk.BOTH, expand=True)
+        root.title(f"{APP_NAME} {APP_VERSION} — Code")
+
+    def open_terminal_code() -> None:
+        """Close this instance before its terminal Code mode begins."""
+        import subprocess
+
+        source_path = str(Path(__file__).resolve())
+        code_model = get_code_model(load_app_config(), model)
+        creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+        if getattr(sys, "frozen", False):
+            # The delay gives this process time to release its Windows mutex.
+            command = (
+                f'ping 127.0.0.1 -n 2 >nul & start "GD Assistant Code" '
+                f'cmd.exe /k "\"{sys.executable}\" --code --model \"{code_model}\""'
+            )
+            subprocess.Popen(["cmd.exe", "/c", command], creationflags=creation_flags)
+        else:
+            launcher = (
+                "import subprocess, sys, time; "
+                "time.sleep(1); "
+                "subprocess.call(sys.argv[1:], "
+                "creationflags=getattr(subprocess, 'CREATE_NEW_CONSOLE', 0))"
+            )
+            subprocess.Popen(
+                [sys.executable, "-c", launcher, sys.executable, source_path, "--code", "--model", code_model],
+                creationflags=creation_flags,
+            )
+
+        root.destroy()
+        os._exit(0)
+
+    mode_menu.add_command(label="Chat", command=switch_to_chat)
+    mode_menu.add_command(label="Code", command=switch_to_code)
+    mode_menu.add_separator()
+    mode_menu.add_command(label="Open Code in Terminal", command=open_terminal_code)
+
     add_message("GD", f"{get_text('welcome_msg', lang)} (Model: {model})")
     message_box.focus_set()
     root.mainloop()
@@ -851,21 +1204,33 @@ def main() -> int:
         return 0
 
     parser = argparse.ArgumentParser(description="GD Assistant")
-    parser.add_argument("--console", action="store_true", dest="console", help="show system debug, tool, STT, and TTS logs in the launching console")
+    parser.add_argument(
+        "--console",
+        "--debug",
+        action="store_true",
+        dest="console",
+        help="show system and Coding Agent round/tool diagnostics in the launching console",
+    )
     parser.add_argument("--terminal", action="store_true", help="use the original terminal-only chat interface")
     parser.add_argument("--voice", action="store_true", help="start in terminal voice-only mode")
     parser.add_argument("--firstboot", action="store_true", help="force the first-time setup wizard to run")
+    parser.add_argument("--code", action="store_true", help="start in Claude Code-style interactive programming mode")
+    parser.add_argument("--workspace", type=str, default=".", help="initial workspace folder for code mode")
+    parser.add_argument("--gui", action="store_true", help="launch graphical interface (can be combined with --code)")
+    parser.add_argument("--codegui", action="store_true", help="direct shortcut to launch Coding Agent GUI")
+    parser.add_argument("--model", type=str, default=None, help="override the Gemini model name")
     arguments = parser.parse_args()
 
     DEBUG_CONSOLE = bool(arguments.console)
 
     if DEBUG_CONSOLE:
         print(f"\n===============================================================\n DEBUG CONSOLE MODE FOR {APP_NAME.upper()}\n {APP_VERSION}\n===============================================================\n", flush=True)
-    elif not arguments.terminal:
+    elif not arguments.terminal and not arguments.code:
         hide_console_window()
 
     api_key = get_api_key()
     model = app_config.get("model", DEFAULT_MODEL)
+    theme = app_config.get("theme", DEFAULT_THEME)
     hotkey = app_config.get("hotkey", DEFAULT_HOTKEY)
     personality = app_config.get("personality", DEFAULT_PERSONALITY)
 
@@ -895,6 +1260,29 @@ def main() -> int:
         print(error, file=sys.stderr)
         return 2
 
+    if arguments.code or arguments.codegui:
+        active_code_model = arguments.model or get_code_model(app_config, model)
+
+        if arguments.gui or arguments.codegui:
+            from code_gui import launch_coding_gui
+            launch_coding_gui(
+                client,
+                model=active_code_model,
+                start_dir=arguments.workspace,
+                theme=theme,
+                debug=DEBUG_CONSOLE,
+            )
+            return 0
+        else:
+            from code_cli import launch_coding_cli
+            launch_coding_cli(
+                client,
+                model=active_code_model,
+                start_dir=arguments.workspace,
+                debug=DEBUG_CONSOLE,
+            )
+            return 0
+
     if arguments.terminal:
         chat_loop(client, model, personality)
     elif arguments.voice:
@@ -912,7 +1300,10 @@ def main() -> int:
                     return
                 except Exception:
                     pass
-            threading.Thread(target=lambda: launch_chat_ui(client, model, lang, personality), daemon=True).start()
+            threading.Thread(
+                target=lambda: launch_chat_ui(client, model, lang, personality, theme),
+                daemon=True,
+            ).start()
 
         tray_daemon = TrayDaemon(on_open_chat=open_gui_safely, on_quit=lambda: os._exit(0))
         threading.Thread(target=tray_daemon.run_tray, daemon=True).start()
@@ -923,7 +1314,7 @@ def main() -> int:
         except Exception as e:
             print(f"[NOTICE] Failed to register hotkey '{hotkey}': {e}")
 
-        launch_chat_ui(client, model, lang, personality)
+        launch_chat_ui(client, model, lang, personality, theme)
     return 0
 
 if __name__ == "__main__":
