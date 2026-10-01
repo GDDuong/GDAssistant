@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import os
 import threading
-from pathlib import Path
 from typing import Any
 import tkinter as tk
-from tkinter import scrolledtext, filedialog, ttk
+from tkinter import scrolledtext, filedialog
 
 from coding_tools import set_workspace, get_workspace
 from code_agent import CodeAgentSession
 from themes import get_theme
+from translations import get_text
 
 class CodeAgentPanel(tk.Frame):
     """Embeddable Coding Agent interface for GD Assistant's main window."""
@@ -24,12 +24,14 @@ class CodeAgentPanel(tk.Frame):
         start_dir: str = ".",
         theme: str = "dark",
         debug: bool = False,
+        lang: str = "en",
     ) -> None:
         self.colors = get_theme(theme)
         super().__init__(parent, bg=self.colors["background"])
         self.client = client
         self.model = model
         self.debug = debug
+        self.lang = lang
         set_workspace(start_dir)
         self.session = CodeAgentSession(
             self.client, model=self.model, on_status=self.on_agent_status, debug=self.debug
@@ -43,16 +45,16 @@ class CodeAgentPanel(tk.Frame):
         top_bar = tk.Frame(self, bg=color["panel"], padx=10, pady=8)
         top_bar.pack(fill=tk.X, side=tk.TOP)
 
-        tk.Label(top_bar, text="Workspace:", bg=color["panel"], fg=color["foreground"], font=("Segoe UI", 9, "bold")).pack(side=tk.LEFT, padx=(0, 6))
+        tk.Label(top_bar, text=self._text("code_workspace"), bg=color["panel"], fg=color["foreground"], font=("Segoe UI", 9, "bold")).pack(side=tk.LEFT, padx=(0, 6))
 
         self.ws_var = tk.StringVar(value=str(get_workspace()))
         self.ws_entry = tk.Entry(top_bar, textvariable=self.ws_var, bg=color["input"], fg=color["foreground"], insertbackground=color["foreground"], width=42, font=("Consolas", 9))
         self.ws_entry.pack(side=tk.LEFT, padx=(0, 6))
 
-        browse_btn = tk.Button(top_bar, text="Browse...", command=self.on_browse_workspace, bg=color["button"], fg=color["foreground"], activebackground=color["button_active"], activeforeground=color["foreground"], relief=tk.FLAT, padx=8)
+        browse_btn = tk.Button(top_bar, text=self._text("code_browse"), command=self.on_browse_workspace, bg=color["button"], fg=color["foreground"], activebackground=color["button_active"], activeforeground=color["foreground"], relief=tk.FLAT, padx=8)
         browse_btn.pack(side=tk.LEFT, padx=(0, 15))
 
-        tk.Label(top_bar, text=f"Model: {self.model}", bg=color["panel"], fg=color["muted"], font=("Segoe UI", 9)).pack(side=tk.LEFT, padx=(0, 8))
+        tk.Label(top_bar, text=f"{self._text('code_model')} {self.model}", bg=color["panel"], fg=color["muted"], font=("Segoe UI", 9)).pack(side=tk.LEFT, padx=(0, 8))
 
         # ---- MAIN SPLIT VIEW ----
         paned = tk.PanedWindow(self, orient=tk.HORIZONTAL, bg=color["background"], bd=0, sashwidth=5)
@@ -87,7 +89,7 @@ class CodeAgentPanel(tk.Frame):
         right_frame = tk.Frame(paned, bg=color["panel"], padx=8, pady=8)
         paned.add(right_frame, minsize=240)
 
-        tk.Label(right_frame, text="Live Activity Log", bg=color["panel"], fg=color["foreground"], font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(0, 4))
+        tk.Label(right_frame, text=self._text("code_activity_log"), bg=color["panel"], fg=color["foreground"], font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(0, 4))
 
         self.action_log = scrolledtext.ScrolledText(
             right_frame,
@@ -102,13 +104,13 @@ class CodeAgentPanel(tk.Frame):
         )
         self.action_log.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
 
-        tk.Label(right_frame, text="Quick Actions", bg=color["panel"], fg=color["foreground"], font=("Segoe UI", 9, "bold")).pack(anchor="w", pady=(0, 4))
+        tk.Label(right_frame, text=self._text("code_quick_actions"), bg=color["panel"], fg=color["foreground"], font=("Segoe UI", 9, "bold")).pack(anchor="w", pady=(0, 4))
 
         btn_opts = {"bg": color["button"], "fg": color["foreground"], "activebackground": color["button_active"], "activeforeground": color["foreground"], "relief": tk.FLAT, "pady": 4}
-        tk.Button(right_frame, text="Run Tests (pytest)", command=lambda: self.submit_quick("Run pytest and fix any failures found"), **btn_opts).pack(fill=tk.X, pady=2)
-        tk.Button(right_frame, text="Git Status & Diffs", command=lambda: self.submit_quick("Run git status and show git diff summary"), **btn_opts).pack(fill=tk.X, pady=2)
-        tk.Button(right_frame, text="List Workspace Files", command=lambda: self.submit_quick("List all files in the current workspace directory"), **btn_opts).pack(fill=tk.X, pady=2)
-        tk.Button(right_frame, text="Clear Transcript", command=self.clear_transcript, **btn_opts).pack(fill=tk.X, pady=2)
+        tk.Button(right_frame, text=self._text("code_run_tests"), command=lambda: self.submit_quick(self._text("code_quick_run_tests_prompt")), **btn_opts).pack(fill=tk.X, pady=2)
+        tk.Button(right_frame, text=self._text("code_git_status"), command=lambda: self.submit_quick(self._text("code_quick_git_status_prompt")), **btn_opts).pack(fill=tk.X, pady=2)
+        tk.Button(right_frame, text=self._text("code_list_files"), command=lambda: self.submit_quick(self._text("code_quick_list_files_prompt")), **btn_opts).pack(fill=tk.X, pady=2)
+        tk.Button(right_frame, text=self._text("code_clear_transcript"), command=self.clear_transcript, **btn_opts).pack(fill=tk.X, pady=2)
 
         # ---- BOTTOM INPUT BAR ----
         bottom_frame = tk.Frame(self, bg=color["panel"], padx=10, pady=8)
@@ -136,7 +138,7 @@ class CodeAgentPanel(tk.Frame):
 
         self.send_btn = tk.Button(
             btn_container,
-            text="Send",
+            text=self._text("code_send"),
             command=self.submit_prompt,
             bg=color["accent"],
             fg="#ffffff",
@@ -149,11 +151,14 @@ class CodeAgentPanel(tk.Frame):
         self.send_btn.pack(fill=tk.BOTH, expand=True)
 
         # Status Bar
-        self.status_var = tk.StringVar(value="Ready")
+        self.status_var = tk.StringVar(value=self._text("code_ready"))
         self.status_label = tk.Label(self, textvariable=self.status_var, bg=color["accent"], fg="#ffffff", anchor="w", font=("Segoe UI", 8), padx=8, pady=2)
         self.status_label.pack(fill=tk.X, side=tk.BOTTOM)
 
-        self._append_message("System", f"Coding Agent Studio Ready.\nWorkspace: {get_workspace()}\nModel: {self.model}\nEnter tasks below (Press Enter to send, Shift+Enter for newline).\n", "system")
+        self._append_message(self._text("code_system"), self._text("code_welcome").format(workspace=get_workspace(), model=self.model), "system")
+
+    def _text(self, key: str) -> str:
+        return get_text(key, self.lang)
 
     def _append_message(self, speaker: str, text: str, tag: str = "agent") -> None:
         self.transcript.configure(state=tk.NORMAL)
@@ -174,10 +179,10 @@ class CodeAgentPanel(tk.Frame):
         self.after(0, lambda: self.status_var.set(message))
 
     def on_browse_workspace(self) -> None:
-        chosen = filedialog.askdirectory(initialdir=str(get_workspace()), title="Select Project Directory")
+        chosen = filedialog.askdirectory(initialdir=str(get_workspace()), title=self._text("code_select_workspace"))
         if chosen and set_workspace(chosen):
             self.ws_var.set(str(get_workspace()))
-            self._append_message("System", f"Switched workspace to: {get_workspace()}", "system")
+            self._append_message(self._text("code_system"), self._text("code_workspace_changed").format(workspace=get_workspace()), "system")
             self.session = CodeAgentSession(self.client, model=self.model, on_status=self.on_agent_status, debug=self.debug)
 
     def on_return_pressed(self, event: Any) -> str | None:
@@ -201,24 +206,24 @@ class CodeAgentPanel(tk.Frame):
             return
 
         self.input_box.delete("1.0", tk.END)
-        self._append_message("You", prompt, "user")
+        self._append_message(self._text("code_you"), prompt, "user")
 
         self.is_busy = True
-        self.send_btn.configure(state=tk.DISABLED, text="Working...")
-        self.status_var.set("Agent working...")
+        self.send_btn.configure(state=tk.DISABLED, text=self._text("code_working"))
+        self.status_var.set(self._text("code_agent_working"))
         self.status_label.configure(bg=self.colors["working"])
 
         def run_thread():
             try:
                 response = self.session.execute_turn(prompt)
             except Exception as e:
-                response = f"Execution error: {e}"
+                response = self._text("code_execution_error").format(error=e)
 
             def finish():
-                self._append_message("GD Assistant", response, "agent")
+                self._append_message(self._text("code_agent_name"), response, "agent")
                 self.is_busy = False
-                self.send_btn.configure(state=tk.NORMAL, text="Send")
-                self.status_var.set("Ready")
+                self.send_btn.configure(state=tk.NORMAL, text=self._text("code_send"))
+                self.status_var.set(self._text("code_ready"))
                 self.status_label.configure(bg=self.colors["accent"])
                 self.input_box.focus_set()
 
@@ -242,13 +247,14 @@ class CodeAgentGUI:
         start_dir: str = ".",
         theme: str = "dark",
         debug: bool = False,
+        lang: str = "en",
     ) -> None:
         self.root = tk.Tk()
-        self.root.title("GD Assistant :: Coding Agent Studio")
+        self.root.title(f"GD Assistant :: {get_text('mode_code', lang)}")
         self.root.geometry("1040x700")
         self.root.minsize(850, 520)
         self.root.configure(bg=get_theme(theme)["background"])
-        self.panel = CodeAgentPanel(self.root, client, model=model, start_dir=start_dir, theme=theme, debug=debug)
+        self.panel = CodeAgentPanel(self.root, client, model=model, start_dir=start_dir, theme=theme, debug=debug, lang=lang)
         self.panel.pack(fill=tk.BOTH, expand=True)
 
     def run(self) -> None:
@@ -260,6 +266,7 @@ def launch_coding_gui(
     start_dir: str = ".",
     theme: str = "dark",
     debug: bool = False,
+    lang: str = "en",
 ) -> None:
-    app = CodeAgentGUI(client, model=model, start_dir=start_dir, theme=theme, debug=debug)
+    app = CodeAgentGUI(client, model=model, start_dir=start_dir, theme=theme, debug=debug, lang=lang)
     app.run()

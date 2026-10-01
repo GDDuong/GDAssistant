@@ -7,16 +7,22 @@ import ctypes
 import os
 import re
 import tempfile
+import threading
 import numpy as np
 import pyttsx3
 import sounddevice as sd
-from faster_whisper import WhisperModel
 import edge_tts
 
 SAMPLE_RATE = 16000
-SILENCE_DURATION_SEC = 1.2
+SILENCE_DURATION_SEC = 0.8
 MAX_RECORDING_SEC = 12
 DEFAULT_VOICE = "en-US-AvaNeural"
+DEFAULT_STT_MODEL = "base.en"
+TTS_TIMEOUT_SEC = 20
+
+_voice_model_lock = threading.Lock()
+_shared_voice_assistant: "VoiceAssistant | None" = None
+_voice_input_device: int | str | None = None
 
 
 def play_mp3_native(file_path: str) -> None:
@@ -29,12 +35,21 @@ def play_mp3_native(file_path: str) -> None:
 
 
 def get_input_devices() -> list[tuple[int, str]]:
-    """Return a list of available microphone input devices as (index, name)."""
+    """Return WASAPI microphone input devices as (index, name)."""
     devices = []
     try:
-        device_list = sd.query_devices()
-        for idx, dev in enumerate(device_list):
-            if dev.get("max_input_channels", 0) > 0:
+        # Windows exposes every mic once per host API (MME, DirectSound,
+        # WASAPI, WDM-KS); listing only WASAPI shows each physical mic once.
+        wasapi_index = None
+        for api_idx, api in enumerate(sd.query_hostapis()):
+            if "WASAPI" in str(api.get("name", "")):
+                wasapi_index = api_idx
+                break
+
+        for idx, dev in enumerate(sd.query_devices()):
+            if dev.get("max_input_channels", 0) > 0 and (
+                wasapi_index is None or dev.get("hostapi") == wasapi_index
+            ):
                 devices.append((idx, dev.get("name", f"Device {idx}")))
     except Exception:
         pass
@@ -42,9 +57,13 @@ def get_input_devices() -> list[tuple[int, str]]:
 
 
 class VoiceAssistant:
-    def __init__(self, model_size: str = "small.en", device: int | str | None = None, debug: bool = False) -> None:
+    def __init__(self, model_size: str = DEFAULT_STT_MODEL, device: int | str | None = None, debug: bool = False) -> None:
         self.debug = debug
         self.device = device
+        # Deferred import: keeps pure-TTS warm-up from paying the heavy
+        # Faster-Whisper import cost at module load.
+        from faster_whisper import WhisperModel
+
         self.log(f"[STT] Initializing Faster-Whisper model ({model_size})...")
         self.stt_model = WhisperModel(model_size, device="cpu", compute_type="int8")
         self.log("[STT] Faster-Whisper model ready.")
@@ -59,6 +78,7 @@ class VoiceAssistant:
         if not text:
             return
         clean_text = re.sub(r"[\*`#_~]", "", text)
+        temp_path: str | None = None
 
         try:
             self.log(f"[TTS] Synthesizing speech audio ({len(clean_text)} chars) with Edge-TTS [{DEFAULT_VOICE}]...")
@@ -68,17 +88,18 @@ class VoiceAssistant:
 
             async def _generate():
                 communicate = edge_tts.Communicate(clean_text, DEFAULT_VOICE)
-                await communicate.save(temp_path)
+                # Without this timeout a stalled Edge endpoint wedged the UI
+                # in the "Speaking..." state forever.
+                await asyncio.wait_for(communicate.save(temp_path), timeout=TTS_TIMEOUT_SEC)
 
             asyncio.run(_generate())
-            self.log(f"[TTS] Generated audio temp file: {temp_path}")
+
+            if os.path.getsize(temp_path) == 0:
+                raise RuntimeError("Edge-TTS produced an empty audio file")
 
             self.log("[TTS] Playing speech via Win32 MCI player...")
             play_mp3_native(temp_path)
             self.log("[TTS] Audio playback completed.")
-
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
 
         except Exception as error:
             self.log(f"[TTS WARNING] Edge-TTS failed ({error}), falling back to SAPI5...")
@@ -91,6 +112,12 @@ class VoiceAssistant:
                 self.log("[TTS] SAPI5 fallback playback completed.")
             except Exception as fallback_error:
                 self.log(f"[TTS ERROR] SAPI5 failed: {fallback_error}")
+        finally:
+            if temp_path and os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    pass
 
     def listen_dynamic(self) -> str:
         """Record audio with automated noise floor calibration and silence detection."""
@@ -132,7 +159,7 @@ class VoiceAssistant:
                 elif has_spoken:
                     silence_samples += len(audio_chunk)
                     if silence_samples >= int(SILENCE_DURATION_SEC * SAMPLE_RATE):
-                        self.log("[AUDIO] Continuous silence limit met (1.2s). Stopping recording.")
+                        self.log(f"[AUDIO] Continuous silence limit met ({SILENCE_DURATION_SEC}s). Stopping recording.")
                         break
 
         if not recording or not has_spoken:
@@ -185,3 +212,66 @@ class VoiceAssistant:
                 self.log("[VOICE LOOP] Session interrupted by user.")
                 self.speak("Goodbye!")
                 break
+
+
+def get_voice_assistant(debug: bool = False, device: int | str | None = None) -> VoiceAssistant:
+    """Return the one shared, locally cached speech-to-text model instance."""
+    global _shared_voice_assistant, _voice_input_device
+    if device is not None:
+        _voice_input_device = device
+
+    # Keep initialization out of the GUI thread. If a microphone request arrives
+    # while preloading is still in progress, its worker waits here without
+    # creating or downloading a second Whisper model.
+    with _voice_model_lock:
+        if _shared_voice_assistant is None:
+            _shared_voice_assistant = VoiceAssistant(debug=debug, device=_voice_input_device)
+        elif debug:
+            _shared_voice_assistant.debug = True
+        return _shared_voice_assistant
+
+
+def set_voice_input_device(device: int | str | None) -> None:
+    """Point the shared assistant at a new microphone without reloading models."""
+    global _voice_input_device
+    _voice_input_device = device
+    with _voice_model_lock:
+        if _shared_voice_assistant is not None:
+            _shared_voice_assistant.device = device
+
+
+def preload_tts_voice(debug: bool = False) -> None:
+    """Warm the Edge-TTS network path so the first spoken reply starts faster."""
+    temp_path = ""
+    try:
+        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
+        temp_path = temp_file.name
+        temp_file.close()
+
+        async def _warm():
+            communicate = edge_tts.Communicate("Voice ready.", DEFAULT_VOICE)
+            await asyncio.wait_for(communicate.save(temp_path), timeout=TTS_TIMEOUT_SEC)
+
+        asyncio.run(_warm())
+        if debug:
+            print("[TTS] Edge-TTS warm-up completed.", flush=True)
+    except Exception as error:
+        if debug:
+            print(f"[TTS WARNING] Edge-TTS warm-up skipped: {error}", flush=True)
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+
+
+def preload_voice_assistant(debug: bool = False) -> None:
+    """Warm the shared Faster-Whisper model from a caller-owned background thread."""
+    try:
+        get_voice_assistant(debug=debug)
+    except Exception as error:
+        # Voice remains optional: a later microphone request can retry loading,
+        # and text chat / Code Mode stay available even if warm-up fails.
+        if debug:
+            print(f"[STT WARNING] Background voice preload failed: {error}", flush=True)

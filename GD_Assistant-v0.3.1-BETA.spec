@@ -3,19 +3,18 @@ from PyInstaller.utils.hooks import collect_all
 
 datas = []
 binaries = []
-hiddenimports = [
-    'pyttsx3.drivers',
-    'pyttsx3.drivers.sapi5',
-]
+hiddenimports = ['pyttsx3.drivers', 'pyttsx3.drivers.sapi5']
+tmp_ret = collect_all('faster_whisper')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+tmp_ret = collect_all('sounddevice')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+tmp_ret = collect_all('edge_tts')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+tmp_ret = collect_all('ctranslate2')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+tmp_ret = collect_all('onnxruntime')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
-for pkg in ['faster_whisper', 'sounddevice', 'edge_tts', 'ctranslate2', 'onnxruntime']:
-    try:
-        tmp_datas, tmp_binaries, tmp_hiddenimports = collect_all(pkg)
-        datas.extend(tmp_datas)
-        binaries.extend(tmp_binaries)
-        hiddenimports.extend(tmp_hiddenimports)
-    except Exception:
-        pass
 
 a = Analysis(
     ['main.py'],
@@ -38,7 +37,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='GD Assistant',
+    name='GD_Assistant-v0.3.1-BETA',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

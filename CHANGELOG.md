@@ -2,6 +2,44 @@
 
 All notable changes to GD Assistant are documented here.
 
+## v0.3.1-BETA
+
+### Highlights
+
+- **Fixed the "Speaking..." freeze** — voice replies no longer hang the app when the speech service stalls.
+- **Microphone selection** — pick your preferred microphone in Settings or during first-time setup.
+- **Revamped first-time setup** — a themed, streamlined wizard now covers models, theme, microphone, and hotkey.
+
+### Fixes
+
+- Voice replies no longer freeze at "Speaking..." forever: Edge-TTS synthesis now times out after 20 seconds and falls back to the offline Windows (SAPI5) voice. Empty audio is rejected and temporary files are always cleaned up.
+- The system tray tooltip shows the real app name and version from the app constants instead of a hardcoded "GD Assistant v0.1".
+
+### Voice & Performance
+
+- New **Microphone** dropdown in Settings and in setup: lists each physical microphone once (WASAPI only, fixing the duplicated entries Windows created per audio host API) and switches live without reloading the speech model.
+- The Edge-TTS network path is warmed in the background at launch so the first spoken reply starts faster.
+- The heavy Faster-Whisper import is deferred until a microphone is actually used, speeding up startup.
+- More of the voice flow is localized (loading status, "no speech", and request-failure messages).
+
+### First-Time Setup Wizard
+
+- All wizard windows now use the app's Light/Dark palette, and Light plus English lead the choices as the defaults.
+- Step 1 combines the API key with Chat and Code model dropdowns (including the "use the same model" option).
+- Step 2 selects the theme with large Dark/Light buttons, matching the language picker.
+- Step 3 combines microphone choice with the global hotkey.
+- Setup now also saves the code model, model sharing, theme, and microphone preference — previously it only saved the chat model, hotkey, language, and personality.
+
+### Other
+
+- All Code Mode CLI commands now require a leading slash (`/cd`, `/status`, `/model`, `/exit`); anything else is sent to the agent as a prompt.
+- `requirements.txt` now lists `faster-whisper` and `edge-tts`, which were missing.
+- Code Mode's screenshot tool reports the saved file path back to the agent.
+
+---
+
+**GD Assistant v0.3.1-BETA** is an in-progress beta release. Feedback and bug reports are welcome as development continues toward v1.0.
+
 ## v0.3-BETA
 
 ### Highlights
@@ -20,6 +58,12 @@ All notable changes to GD Assistant are documented here.
 
 - Appearance is now selected with clear Light/Dark radio buttons beside the language choice.
 - Model pickers include common Gemini models while still allowing a custom model name.
+
+### Performance & Localization
+
+- Added Vietnamese translations for the new Chat/Code model settings, appearance options, Mode menu, Code GUI, and Code CLI.
+- Voice recognition now warms its local Faster-Whisper model in the background and uses the faster `base.en` model by default.
+- Reduced the end-of-speech silence delay so requests are sent sooner after speaking.
 
 ---
 

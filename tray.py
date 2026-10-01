@@ -14,9 +14,11 @@ def create_tray_icon_image() -> Image.Image:
     return image
 
 class TrayDaemon:
-    def __init__(self, on_open_chat: callable, on_quit: callable):
+    def __init__(self, on_open_chat: callable, on_quit: callable, app_name: str, app_version: str):
         self.on_open_chat = on_open_chat
         self.on_quit = on_quit
+        self.app_name = app_name
+        self.app_version = app_version
         self.icon = None
 
     def run_tray(self) -> None:
@@ -28,7 +30,7 @@ class TrayDaemon:
             item('Exit', self.quit_action)
         )
         # Note: Must use pystray.Icon (capital I)
-        self.icon = pystray.Icon("GD Assistant", image, "GD Assistant v0.1", menu)
+        self.icon = pystray.Icon(self.app_name, image, f"{self.app_name} {self.app_version}", menu)
 
         # Run tray loop (blocks background thread)
         self.icon.run()

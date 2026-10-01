@@ -1,6 +1,6 @@
 # GD Assistant
 
-> A Windows desktop assistant powered by Google Gemini — currently in **v0.3-BETA**.
+> A Windows desktop assistant powered by Google Gemini — currently in **v0.3.1-BETA**.
 
 GD Assistant combines Gemini's reasoning with carefully scoped local tools. Use it for conversation, voice interaction, limited desktop assistance, persistent local memory, and workspace-focused coding help.
 
@@ -34,10 +34,10 @@ python main.py --code
 Useful Code CLI commands:
 
 ```text
-cd <path>                    Change the active workspace
-status                       Show the current workspace and model
+/cd <path>                   Change the active workspace
+/status                      Show the current workspace and model
 /model <Gemini model name>   Change the active model for this CLI session
-exit                         Leave Code CLI
+/exit                        Leave Code CLI
 ```
 
 > **Important:** Code Mode can edit files and run development commands inside its chosen workspace. Only use it with projects and folders you trust.
@@ -105,7 +105,7 @@ Tool results are logged in Console/Debug mode. The assistant uses those real res
 
 ## Voice System
 
-Voice input uses **Faster-Whisper** (`small.en`) locally on the CPU. It calibrates background noise, detects speech and silence, then transcribes the recording for Gemini.
+Voice input uses **Faster-Whisper** (`base.en`) locally on the CPU. The model warms in the background while the app opens, so Chat and Code Mode stay usable. Recording stops after a short period of silence, then sends the transcription to Gemini.
 
 Voice replies use **Microsoft Edge TTS** with `en-US-AvaNeural`. If that is unavailable, GD Assistant falls back to Windows SAPI5 through `pyttsx3`.
 
@@ -121,7 +121,7 @@ This includes:
 
 ```text
 api.json       Gemini API key
-config.json    Models, theme, language, hotkey, and personality
+config.json    Models, theme, language, hotkey, microphone, and personality
 memory.json    Persistent assistant memory
 ```
 
@@ -155,7 +155,7 @@ Start the app:
 python main.py
 ```
 
-The first launch opens the setup wizard for your Gemini API key, model, hotkey, and personality.
+The first launch opens the setup wizard for your Gemini API key, Chat and Code models, theme, microphone, hotkey, and personality.
 
 ## Building the executable
 
@@ -163,19 +163,19 @@ Install PyInstaller, then build the windowed one-file release:
 
 ```powershell
 python -m pip install pyinstaller
-python -m PyInstaller --noconfirm --clean GD_Assistant-v0.3-BETA.spec
+python -m PyInstaller --noconfirm --clean GD_Assistant-v0.3.1-BETA.spec
 ```
 
 The finished build is created at:
 
 ```text
-dist\GD_Assistant-v0.3-BETA.exe
+dist\GD_Assistant-v0.3.1-BETA.exe
 ```
 
 ## Project Status
 
-**Current version:** `v0.3-BETA`
+**Current version:** `v0.3.1-BETA`
 
 GD Assistant is an active beta project on the road to v1.0. Features, supported Gemini models, local tools, and safety rules may evolve as the project is tested and improved.
 
-See [CHANGELOG.md](CHANGELOG.md) for v0.3-BETA release notes.
+See [CHANGELOG.md](CHANGELOG.md) for v0.3.1-BETA release notes.

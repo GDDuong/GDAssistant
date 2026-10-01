@@ -7,3 +7,5 @@ pyttsx3>=2.90
 sounddevice>=0.5.0
 pystray>=0.19.5
 keyboard>=0.13.5
+faster-whisper>=1.1.0
+edge-tts>=6.1.0

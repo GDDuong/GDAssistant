@@ -3,25 +3,25 @@
 from __future__ import annotations
 
 import os
-import sys
-from pathlib import Path
 from typing import Any
 from coding_tools import set_workspace, get_workspace
 from code_agent import CodeAgentSession
+from translations import get_text
 
 def launch_coding_cli(
     client: Any,
     model: str = "gemini-3.5-flash-lite",
     start_dir: str = ".",
     debug: bool = False,
+    lang: str = "en",
 ) -> None:
     set_workspace(start_dir)
 
     print("\n" + "=" * 65)
-    print(" GD ASSISTANT :: CODING AGENT MODE (Claude Code Style)")
-    print(f" Workspace : {get_workspace()}")
-    print(f" Model     : {model}")
-    print(" Commands  : 'cd <path>' | 'status' | '/model <name>' | 'exit' / 'quit'")
+    print(f" {get_text('code_cli_title', lang)}")
+    print(f" {get_text('code_cli_workspace', lang)} : {get_workspace()}")
+    print(f" {get_text('code_cli_model', lang)}     : {model}")
+    print(f" {get_text('code_cli_commands', lang)}  : {get_text('code_cli_command_list', lang)}")
     print("=" * 65 + "\n")
 
     def print_agent_status(msg: str) -> None:
@@ -37,31 +37,36 @@ def launch_coding_cli(
             if not user_input:
                 continue
 
-            if user_input.lower() in {"exit", "quit", ":q"}:
-                print("Exiting Coding Mode.")
+            lowered = user_input.lower()
+
+            if lowered in {"/exit", "/quit", "/q"}:
+                print(get_text("code_cli_exiting", lang))
                 break
 
-            if user_input.lower().startswith("/model"):
+            if lowered.startswith("/model"):
                 requested_model = user_input[len("/model"):].strip()
                 if not requested_model:
-                    print(f"Current model: {session.model}")
-                    print("Usage: /model <Gemini model name>")
+                    print(get_text("code_cli_current_model", lang).format(model=session.model))
+                    print(get_text("code_cli_model_usage", lang))
                     continue
                 session.model = requested_model
-                print(f"Code Agent model changed to: {session.model}")
+                print(get_text("code_cli_model_changed", lang).format(model=session.model))
                 continue
 
-            if user_input.startswith("cd "):
-                target = user_input[3:].strip()
+            if lowered == "/cd" or lowered.startswith("/cd "):
+                target = user_input[4:].strip()
+                if not target:
+                    print(get_text("code_cli_cd_usage", lang))
+                    continue
                 if set_workspace(target):
-                    print(f"Active workspace changed to: {get_workspace()}")
+                    print(get_text("code_cli_workspace_changed", lang).format(workspace=get_workspace()))
                 else:
-                    print(f"Error: Directory not found: {target}")
+                    print(get_text("code_cli_directory_missing", lang).format(path=target))
                 continue
 
-            if user_input.lower() == "status":
-                print(f"Current workspace: {get_workspace()}")
-                print(f"Current model: {session.model}")
+            if lowered == "/status":
+                print(get_text("code_cli_current_workspace", lang).format(workspace=get_workspace()))
+                print(get_text("code_cli_current_model", lang).format(model=session.model))
                 continue
 
             print("\033[90mAgent working...\033[0m")
@@ -69,5 +74,5 @@ def launch_coding_cli(
             print(f"\n\033[1mGD Assistant\033[0m:\n{response}\n")
 
         except (KeyboardInterrupt, EOFError):
-            print("\nAborted by user.")
+            print(f"\n{get_text('code_cli_aborted', lang)}")
             break

@@ -41,7 +41,7 @@ from local_tools import (
 )
 
 APP_NAME = "GD Assistant"
-APP_VERSION = "v0.3-BETA"
+APP_VERSION = "v0.3.1-BETA"
 _active_root = None
 _active_hwnd = None
 _mutex_handle = None
@@ -51,7 +51,7 @@ DEFAULT_CODE_MODEL = "gemini-3.5-flash-lite"
 DEFAULT_HOTKEY = "ctrl+alt+g"
 DEFAULT_LANGUAGE = "en"
 DEFAULT_PERSONALITY = ""
-DEFAULT_THEME = "dark"
+DEFAULT_THEME = "light"
 COMMON_GEMINI_MODELS = (
     "gemini-3.8-flash",
     "gemini-3.6-flash",
@@ -306,6 +306,7 @@ def load_app_config() -> dict[str, Any]:
         "theme": DEFAULT_THEME,
         "hotkey": DEFAULT_HOTKEY,
         "language": DEFAULT_LANGUAGE,
+        "voice_device": None,
         "personality": DEFAULT_PERSONALITY
     }
     if CONFIG_PATH.exists():
@@ -358,149 +359,267 @@ def save_api_key(api_key: str) -> None:
     with API_CONFIG_PATH.open("w", encoding="utf-8") as f:
         json.dump(config_data, f, indent=4)
 
+def apply_combobox_style(window_root: Any, palette: dict[str, str]) -> None:
+    """Style editable Combobox controls and their popup lists on Windows."""
+    from tkinter import ttk
+
+    style = ttk.Style(window_root)
+    try:
+        style.theme_use("clam")
+    except Exception:
+        pass
+    style.configure(
+        "GDAssistant.TCombobox",
+        fieldbackground=palette["input"],
+        background=palette["button"],
+        foreground=palette["foreground"],
+        arrowcolor=palette["foreground"],
+        bordercolor=palette["border"],
+        lightcolor=palette["border"],
+        darkcolor=palette["border"],
+    )
+    style.map(
+        "GDAssistant.TCombobox",
+        fieldbackground=[("disabled", palette["panel"]), ("readonly", palette["input"])],
+        foreground=[("disabled", palette["muted"])],
+        selectbackground=[("readonly", palette["accent"])],
+        selectforeground=[("readonly", "#ffffff")],
+    )
+    window_root.option_add("*TCombobox*Listbox.background", palette["panel"])
+    window_root.option_add("*TCombobox*Listbox.foreground", palette["foreground"])
+    window_root.option_add("*TCombobox*Listbox.selectBackground", palette["accent"])
+    window_root.option_add("*TCombobox*Listbox.selectForeground", "#ffffff")
+
+def open_wizard_window(title: str, geometry: str, theme: str) -> tuple[Any, dict[str, str]]:
+    """Create one themed setup-wizard window and return it with its palette."""
+    import tkinter as tk
+
+    palette = get_theme(theme)
+    root = tk.Tk()
+    root.title(title)
+    root.geometry(geometry)
+    root.resizable(False, False)
+    root.configure(padx=20, pady=20, bg=palette["background"])
+    apply_combobox_style(root, palette)
+    return root, palette
+
 def run_setup_wizard_lang() -> str | None:
     """Wizard Step 0: Language Selection."""
     import tkinter as tk
     result = {"lang": None, "success": False}
 
-    root = tk.Tk()
-    root.title(get_text("wizard_lang_title", "en"))
-    root.geometry("400x200")
-    root.resizable(False, False)
-    root.configure(padx=20, pady=20)
+    root, colors = open_wizard_window(get_text("wizard_lang_title", "en"), "400x200", "light")
 
-    tk.Label(root, text=get_text("wizard_lang_heading", "en"), font=("Arial", 14, "bold")).pack(anchor="w", pady=(0, 5))
-    tk.Label(root, text=get_text("wizard_lang_sub", "en"), font=("Arial", 9)).pack(anchor="w", pady=(0, 15))
+    label_options = {"bg": colors["background"], "fg": colors["foreground"]}
+    tk.Label(root, text=get_text("wizard_lang_heading", "en"), font=("Arial", 14, "bold"), **label_options).pack(anchor="w", pady=(0, 5))
+    tk.Label(root, text=get_text("wizard_lang_sub", "en"), font=("Arial", 9), **label_options).pack(anchor="w", pady=(0, 15))
 
     def on_select(lang_code):
         result["lang"] = lang_code
         result["success"] = True
         root.destroy()
 
-    tk.Button(root, text="English", command=lambda: on_select("en"), bg="#0078D7", fg="white", width=20).pack(pady=5)
-    tk.Button(root, text="Tiếng Việt", command=lambda: on_select("vi"), bg="#0078D7", fg="white", width=20).pack(pady=5)
+    tk.Button(root, text="English", command=lambda: on_select("en"), bg=colors["accent"], fg="#ffffff", activebackground=colors["accent_active"], activeforeground="#ffffff", width=20).pack(pady=5)
+    tk.Button(root, text="Tiếng Việt", command=lambda: on_select("vi"), bg=colors["accent"], fg="#ffffff", activebackground=colors["accent_active"], activeforeground="#ffffff", width=20).pack(pady=5)
 
     root.mainloop()
     return result["lang"] if result["success"] else None
 
-def run_setup_wizard_step1(lang: str) -> tuple[str, str] | None:
-    """Wizard Step 1: Input API key and model."""
+def run_setup_wizard_step1(lang: str, theme: str = DEFAULT_THEME) -> tuple[str, str, str, bool] | None:
+    """Wizard Step 1: Input API key and choose the chat/code models."""
     import tkinter as tk
     from tkinter import messagebox
-    result = {"key": "", "model": DEFAULT_MODEL, "success": False}
+    from tkinter import ttk
+    result = {"key": "", "model": DEFAULT_MODEL, "code_model": DEFAULT_CODE_MODEL, "share": True, "success": False}
 
-    root = tk.Tk()
-    root.title(get_text("wizard_step1_title", lang))
-    root.geometry("460x310")
-    root.resizable(False, False)
-    root.configure(padx=20, pady=20)
+    root, colors = open_wizard_window(get_text("wizard_step1_title", lang), "460x400", theme)
 
-    tk.Label(root, text=get_text("wizard_step1_heading", lang), font=("Arial", 14, "bold")).pack(anchor="w", pady=(0, 5))
-    tk.Label(root, text=get_text("wizard_step1_sub", lang), font=("Arial", 9)).pack(anchor="w", pady=(0, 10))
+    label_options = {"bg": colors["background"], "fg": colors["foreground"]}
+    entry_options = {
+        "bg": colors["input"],
+        "fg": colors["foreground"],
+        "insertbackground": colors["foreground"],
+        "highlightbackground": colors["border"],
+        "highlightcolor": colors["accent"],
+    }
 
-    tk.Label(root, text=get_text("api_key_label", lang), font=("Arial", 9, "bold")).pack(anchor="w")
-    entry_box = tk.Entry(root, width=52, show="*")
+    tk.Label(root, text=get_text("wizard_step1_heading", lang), font=("Arial", 14, "bold"), **label_options).pack(anchor="w", pady=(0, 5))
+    tk.Label(root, text=get_text("wizard_step1_sub", lang), font=("Arial", 9), **label_options).pack(anchor="w", pady=(0, 10))
+
+    tk.Label(root, text=get_text("api_key_label", lang), font=("Arial", 9, "bold"), **label_options).pack(anchor="w")
+    entry_box = tk.Entry(root, width=52, show="*", **entry_options)
     entry_box.pack(anchor="w", pady=(3, 10))
     entry_box.focus_set()
 
-    tk.Label(root, text=get_text("model_label", lang), font=("Arial", 9, "bold")).pack(anchor="w")
-    model_entry = tk.Entry(root, width=52, fg="gray")
-    model_entry.insert(0, DEFAULT_MODEL)
-    model_entry.pack(anchor="w", pady=(3, 15))
+    tk.Label(root, text=get_text("chat_model_label", lang), font=("Arial", 9, "bold"), **label_options).pack(anchor="w")
+    model_entry = ttk.Combobox(root, width=52, values=COMMON_GEMINI_MODELS, state="normal", style="GDAssistant.TCombobox")
+    model_entry.set(DEFAULT_MODEL)
+    model_entry.pack(anchor="w", pady=(3, 6))
 
-    def on_focus_in(event):
-        if model_entry.get() == DEFAULT_MODEL:
-            model_entry.delete(0, tk.END)
-            model_entry.config(fg="black")
+    share_var = tk.BooleanVar(value=True)
+    share_check = tk.Checkbutton(
+        root,
+        text=get_text("share_models_label", lang),
+        variable=share_var,
+        bg=colors["background"],
+        fg=colors["foreground"],
+        activebackground=colors["background"],
+        activeforeground=colors["foreground"],
+        selectcolor=colors["input"],
+        justify=tk.LEFT,
+        wraplength=420,
+    )
+    share_check.pack(anchor="w", pady=(0, 6))
 
-    def on_focus_out(event):
-        if not model_entry.get().strip():
-            model_entry.insert(0, DEFAULT_MODEL)
-            model_entry.config(fg="gray")
+    tk.Label(root, text=get_text("code_model_label", lang), font=("Arial", 9, "bold"), **label_options).pack(anchor="w")
+    code_model_entry = ttk.Combobox(root, width=52, values=COMMON_GEMINI_MODELS, state="normal", style="GDAssistant.TCombobox")
+    code_model_entry.set(DEFAULT_CODE_MODEL)
+    code_model_entry.pack(anchor="w", pady=(3, 15))
 
-    model_entry.bind("<FocusIn>", on_focus_in)
-    model_entry.bind("<FocusOut>", on_focus_out)
+    def update_code_model_state() -> None:
+        code_model_entry.configure(state=tk.DISABLED if share_var.get() else "normal")
+
+    share_check.configure(command=update_code_model_state)
+    update_code_model_state()
 
     def on_confirm():
         entered_key = entry_box.get().strip()
         if not entered_key:
             messagebox.showerror("Error", get_text("err_empty_key", lang), parent=root)
             return
-        entered_model = model_entry.get().strip()
-        if not entered_model or entered_model == DEFAULT_MODEL:
-            entered_model = DEFAULT_MODEL
         result["key"] = entered_key
-        result["model"] = entered_model
+        result["model"] = model_entry.get().strip() or DEFAULT_MODEL
+        result["code_model"] = code_model_entry.get().strip() or DEFAULT_CODE_MODEL
+        result["share"] = share_var.get()
         result["success"] = True
         root.destroy()
 
-    btn = tk.Button(root, text=get_text("btn_next", lang), command=on_confirm, bg="#0078D7", fg="white", width=16)
-    btn.pack(anchor="e")
+    tk.Button(
+        root,
+        text=get_text("btn_next", lang),
+        command=on_confirm,
+        bg=colors["accent"],
+        fg="#ffffff",
+        activebackground=colors["accent_active"],
+        activeforeground="#ffffff",
+        width=16,
+    ).pack(anchor="e")
     root.mainloop()
-    return (result["key"], result["model"]) if result["success"] else None
+    if not result["success"]:
+        return None
+    return (result["key"], result["model"], result["code_model"], result["share"])
 
-def run_setup_wizard_step2(lang: str) -> str | None:
-    """Wizard Step 2: Configure keybinds."""
+def run_setup_wizard_theme(lang: str) -> str | None:
+    """Wizard Step 2: Pick the interface theme."""
     import tkinter as tk
-    hotkey_holder = {"hotkey": DEFAULT_HOTKEY, "success": False}
+    result = {"theme": DEFAULT_THEME, "success": False}
 
-    root = tk.Tk()
-    root.title(get_text("wizard_step2_title", lang))
-    root.geometry("460x220")
-    root.resizable(False, False)
-    root.configure(padx=20, pady=20)
+    root, colors = open_wizard_window(get_text("wizard_prefs_title", lang), "400x200", "light")
 
-    tk.Label(root, text=get_text("wizard_step2_heading", lang), font=("Arial", 14, "bold")).pack(anchor="w", pady=(0, 5))
-    tk.Label(root, text=get_text("wizard_step2_sub", lang), font=("Arial", 9)).pack(anchor="w", pady=(0, 15))
+    label_options = {"bg": colors["background"], "fg": colors["foreground"]}
+    tk.Label(root, text=get_text("wizard_prefs_heading", lang), font=("Arial", 14, "bold"), **label_options).pack(anchor="w", pady=(0, 5))
+    tk.Label(root, text=get_text("wizard_prefs_sub", lang), font=("Arial", 9), **label_options).pack(anchor="w", pady=(0, 15))
 
-    tk.Label(root, text=get_text("hotkey_label", lang), font=("Arial", 9, "bold")).pack(anchor="w")
-    hotkey_entry = tk.Entry(root, width=52, fg="gray")
+    def on_select(choice: str) -> None:
+        result["theme"] = choice
+        result["success"] = True
+        root.destroy()
+
+    # Light is the recommended default, so it leads and takes initial focus.
+    light_btn = tk.Button(root, text=get_text("appearance_light", lang), command=lambda: on_select("light"), bg=colors["accent"], fg="#ffffff", activebackground=colors["accent_active"], activeforeground="#ffffff", width=20)
+    light_btn.pack(pady=5)
+    light_btn.focus_set()
+    tk.Button(root, text=get_text("appearance_dark", lang), command=lambda: on_select("dark"), bg=colors["accent"], fg="#ffffff", activebackground=colors["accent_active"], activeforeground="#ffffff", width=20).pack(pady=5)
+
+    root.bind("<Return>", lambda _event: on_select("light"))
+    root.mainloop()
+    return result["theme"] if result["success"] else None
+
+def run_setup_wizard_step2(lang: str, theme: str = DEFAULT_THEME) -> tuple[str, int | None] | None:
+    """Wizard Step 3: Choose the microphone and configure keybinds."""
+    import tkinter as tk
+    from tkinter import ttk
+    hotkey_holder = {"hotkey": DEFAULT_HOTKEY, "device": None, "success": False}
+
+    root, colors = open_wizard_window(get_text("wizard_step2_title", lang), "460x300", theme)
+
+    label_options = {"bg": colors["background"], "fg": colors["foreground"]}
+    entry_options = {
+        "bg": colors["input"],
+        "fg": colors["foreground"],
+        "insertbackground": colors["foreground"],
+        "highlightbackground": colors["border"],
+        "highlightcolor": colors["accent"],
+    }
+
+    tk.Label(root, text=get_text("wizard_step2_heading", lang), font=("Arial", 14, "bold"), **label_options).pack(anchor="w", pady=(0, 5))
+    tk.Label(root, text=get_text("wizard_step2_sub", lang), font=("Arial", 9), **label_options).pack(anchor="w", pady=(0, 15))
+
+    from voice import get_input_devices
+
+    tk.Label(root, text=get_text("settings_mic_label", lang), font=("Arial", 9, "bold"), **label_options).pack(anchor="w")
+    mic_devices = get_input_devices()
+    mic_values = [get_text("mic_default_option", lang)] + [name for _, name in mic_devices]
+    mic_entry = ttk.Combobox(root, width=52, values=mic_values, state="readonly", style="GDAssistant.TCombobox")
+    mic_position = 0
+    stored_device = load_app_config().get("voice_device")
+    for position, (device_index, _) in enumerate(mic_devices, start=1):
+        if device_index == stored_device:
+            mic_position = position
+            break
+    mic_entry.current(mic_position)
+    mic_entry.pack(anchor="w", pady=(3, 10))
+
+    tk.Label(root, text=get_text("hotkey_label", lang), font=("Arial", 9, "bold"), **label_options).pack(anchor="w")
+    hotkey_entry = tk.Entry(root, width=52, **entry_options)
     hotkey_entry.insert(0, DEFAULT_HOTKEY)
-    hotkey_entry.pack(anchor="w", pady=(5, 20))
+    hotkey_entry.pack(anchor="w", pady=(3, 20))
     hotkey_entry.focus_set()
 
-    def on_focus_in(event):
-        if hotkey_entry.get() == DEFAULT_HOTKEY:
-            hotkey_entry.delete(0, tk.END)
-            hotkey_entry.config(fg="black")
-
-    def on_focus_out(event):
-        if not hotkey_entry.get().strip():
-            hotkey_entry.insert(0, DEFAULT_HOTKEY)
-            hotkey_entry.config(fg="gray")
-
-    hotkey_entry.bind("<FocusIn>", on_focus_in)
-    hotkey_entry.bind("<FocusOut>", on_focus_out)
-
     def on_save():
+        mic_choice = mic_entry.current()
         val = hotkey_entry.get().strip()
         if not val or val == DEFAULT_HOTKEY:
             val = DEFAULT_HOTKEY
         hotkey_holder["hotkey"] = val
+        hotkey_holder["device"] = None if mic_choice <= 0 else mic_devices[mic_choice - 1][0]
         hotkey_holder["success"] = True
         root.destroy()
 
-    btn = tk.Button(root, text=get_text("btn_next", lang), command=on_save, bg="#0078D7", fg="white", width=16)
-    btn.pack(anchor="e")
+    tk.Button(
+        root,
+        text=get_text("btn_next", lang),
+        command=on_save,
+        bg=colors["accent"],
+        fg="#ffffff",
+        activebackground=colors["accent_active"],
+        activeforeground="#ffffff",
+        width=16,
+    ).pack(anchor="e")
     root.mainloop()
-    return hotkey_holder["hotkey"] if hotkey_holder["success"] else None
+    return (hotkey_holder["hotkey"], hotkey_holder["device"]) if hotkey_holder["success"] else None
 
-def run_setup_wizard_step3(lang: str) -> str | None:
-    """Wizard Step 3: Configure Custom Personality."""
+def run_setup_wizard_step3(lang: str, theme: str = DEFAULT_THEME) -> str | None:
+    """Wizard Step 4: Configure Custom Personality."""
     import tkinter as tk
     result = {"personality": "", "success": False}
 
-    root = tk.Tk()
-    root.title(get_text("wizard_step3_title", lang))
-    root.geometry("460x320")
-    root.resizable(False, False)
-    root.configure(padx=20, pady=20)
+    root, colors = open_wizard_window(get_text("wizard_step3_title", lang), "460x320", theme)
 
-    tk.Label(root, text=get_text("wizard_step3_heading", lang), font=("Arial", 14, "bold")).pack(anchor="w", pady=(0, 5))
-    tk.Label(root, text=get_text("wizard_step3_sub", lang), font=("Arial", 9), justify="left").pack(anchor="w", pady=(0, 15))
+    label_options = {"bg": colors["background"], "fg": colors["foreground"]}
+    entry_options = {
+        "bg": colors["input"],
+        "fg": colors["foreground"],
+        "insertbackground": colors["foreground"],
+        "highlightbackground": colors["border"],
+        "highlightcolor": colors["accent"],
+    }
 
-    tk.Label(root, text=get_text("personality_label", lang), font=("Arial", 9, "bold")).pack(anchor="w")
-    pers_text = tk.Text(root, height=5, width=52)
+    tk.Label(root, text=get_text("wizard_step3_heading", lang), font=("Arial", 14, "bold"), **label_options).pack(anchor="w", pady=(0, 5))
+    tk.Label(root, text=get_text("wizard_step3_sub", lang), font=("Arial", 9), justify="left", **label_options).pack(anchor="w", pady=(0, 15))
+
+    tk.Label(root, text=get_text("personality_label", lang), font=("Arial", 9, "bold"), **label_options).pack(anchor="w")
+    pers_text = tk.Text(root, height=5, width=52, **entry_options)
     pers_text.pack(anchor="w", pady=(3, 15))
     pers_text.focus_set()
 
@@ -509,8 +628,16 @@ def run_setup_wizard_step3(lang: str) -> str | None:
         result["success"] = True
         root.destroy()
 
-    btn = tk.Button(root, text=get_text("btn_finish", lang), command=on_finish, bg="#0078D7", fg="white", width=16)
-    btn.pack(anchor="e")
+    tk.Button(
+        root,
+        text=get_text("btn_finish", lang),
+        command=on_finish,
+        bg=colors["accent"],
+        fg="#ffffff",
+        activebackground=colors["accent_active"],
+        activeforeground="#ffffff",
+        width=16,
+    ).pack(anchor="e")
     root.mainloop()
     return result["personality"] if result["success"] else None
 
@@ -662,6 +789,22 @@ def launch_chat_ui(
     voice_app: Any = None
     colors = get_theme(theme)
 
+    def warm_voice_model() -> None:
+        """Preload optional speech components without delaying the interface."""
+        try:
+            from voice import preload_tts_voice, preload_voice_assistant
+
+            # TTS warm-up is quick and network-bound; the Whisper model load
+            # is heavier, so it runs right after on the same background worker.
+            preload_tts_voice(debug=DEBUG_CONSOLE)
+            preload_voice_assistant(debug=DEBUG_CONSOLE)
+        except Exception as error:
+            log_debug(f"[STT WARNING] Voice preload could not start: {error}")
+
+    # Text Chat and Code Mode remain immediately available while this optional
+    # worker imports Faster-Whisper and warms its local model in the background.
+    threading.Thread(target=warm_voice_model, daemon=True, name="gd-voice-preload").start()
+
     root = tk.Tk()
     _active_root = root
     root.title(f"{APP_NAME} {APP_VERSION}")
@@ -675,33 +818,7 @@ def launch_chat_ui(
     mode_menu = tk.Menu(root, tearoff=0)
 
     def apply_ttk_theme(palette: dict[str, str]) -> None:
-        """Style editable Combobox controls and their popup lists on Windows."""
-        style = ttk.Style(root)
-        try:
-            style.theme_use("clam")
-        except tk.TclError:
-            pass
-        style.configure(
-            "GDAssistant.TCombobox",
-            fieldbackground=palette["input"],
-            background=palette["button"],
-            foreground=palette["foreground"],
-            arrowcolor=palette["foreground"],
-            bordercolor=palette["border"],
-            lightcolor=palette["border"],
-            darkcolor=palette["border"],
-        )
-        style.map(
-            "GDAssistant.TCombobox",
-            fieldbackground=[("disabled", palette["panel"]), ("readonly", palette["input"])],
-            foreground=[("disabled", palette["muted"])],
-            selectbackground=[("readonly", palette["accent"])],
-            selectforeground=[("readonly", "#ffffff")],
-        )
-        root.option_add("*TCombobox*Listbox.background", palette["panel"])
-        root.option_add("*TCombobox*Listbox.foreground", palette["foreground"])
-        root.option_add("*TCombobox*Listbox.selectBackground", palette["accent"])
-        root.option_add("*TCombobox*Listbox.selectForeground", "#ffffff")
+        apply_combobox_style(root, palette)
 
     def apply_menu_theme(palette: dict[str, str]) -> None:
         """Keep the File/Mode bar and dropdown menus on the chosen palette."""
@@ -721,7 +838,7 @@ def launch_chat_ui(
     def open_settings_dialog():
         settings_win = tk.Toplevel(root)
         settings_win.title(get_text("settings_title", lang))
-        settings_win.geometry("500x610")
+        settings_win.geometry("500x665")
         settings_win.resizable(False, False)
         settings_win.configure(padx=20, pady=20, bg=colors["background"])
         settings_win.transient(root)
@@ -746,7 +863,7 @@ def launch_chat_ui(
         key_entry.insert(0, current_key)
         key_entry.pack(anchor="w", pady=(3, 10))
 
-        tk.Label(settings_win, text="Chat model", font=("Arial", 9, "bold"), **label_options).pack(anchor="w")
+        tk.Label(settings_win, text=get_text("chat_model_label", lang), font=("Arial", 9, "bold"), **label_options).pack(anchor="w")
         model_entry = ttk.Combobox(
             settings_win,
             width=57,
@@ -762,17 +879,19 @@ def launch_chat_ui(
 
         share_models_check = tk.Checkbutton(
             settings_win,
-            text="Use the same model for Chat and Code mode",
+            text=get_text("share_models_label", lang),
             variable=share_models_var,
             bg=colors["background"],
             fg=colors["foreground"],
             activebackground=colors["background"],
             activeforeground=colors["foreground"],
             selectcolor=colors["input"],
+            justify=tk.LEFT,
+            wraplength=450,
         )
         share_models_check.pack(anchor="w", pady=(0, 6))
 
-        tk.Label(settings_win, text="Code model", font=("Arial", 9, "bold"), **label_options).pack(anchor="w")
+        tk.Label(settings_win, text=get_text("code_model_label", lang), font=("Arial", 9, "bold"), **label_options).pack(anchor="w")
         code_model_entry = ttk.Combobox(
             settings_win,
             width=57,
@@ -793,6 +912,26 @@ def launch_chat_ui(
         hotkey_entry = tk.Entry(settings_win, width=60, **entry_options)
         hotkey_entry.insert(0, app_cfg.get("hotkey", DEFAULT_HOTKEY))
         hotkey_entry.pack(anchor="w", pady=(3, 10))
+
+        from voice import get_input_devices
+
+        tk.Label(settings_win, text=get_text("settings_mic_label", lang), font=("Arial", 9, "bold"), **label_options).pack(anchor="w")
+        mic_devices = get_input_devices()
+        mic_values = [get_text("mic_default_option", lang)] + [name for _, name in mic_devices]
+        mic_entry = ttk.Combobox(
+            settings_win,
+            width=57,
+            values=mic_values,
+            state="readonly",
+            style="GDAssistant.TCombobox",
+        )
+        mic_position = 0
+        for position, (device_index, _) in enumerate(mic_devices, start=1):
+            if device_index == app_cfg.get("voice_device"):
+                mic_position = position
+                break
+        mic_entry.current(mic_position)
+        mic_entry.pack(anchor="w", pady=(3, 10))
 
         tk.Label(settings_win, text=get_text("personality_label", lang), font=("Arial", 9, "bold"), **label_options).pack(anchor="w")
         pers_text = tk.Text(settings_win, height=4, width=45, **entry_options)
@@ -819,9 +958,9 @@ def launch_chat_ui(
 
         appearance_group = tk.Frame(preference_row, bg=colors["background"])
         appearance_group.pack(side=tk.LEFT, anchor="n")
-        tk.Label(appearance_group, text="Appearance", font=("Arial", 9, "bold"), **label_options).pack(anchor="w")
-        tk.Radiobutton(appearance_group, text="Dark", variable=theme_var, value="dark", **radio_options).pack(anchor="w")
-        tk.Radiobutton(appearance_group, text="Light", variable=theme_var, value="light", **radio_options).pack(anchor="w")
+        tk.Label(appearance_group, text=get_text("appearance_label", lang), font=("Arial", 9, "bold"), **label_options).pack(anchor="w")
+        tk.Radiobutton(appearance_group, text=get_text("appearance_dark", lang), variable=theme_var, value="dark", **radio_options).pack(anchor="w")
+        tk.Radiobutton(appearance_group, text=get_text("appearance_light", lang), variable=theme_var, value="light", **radio_options).pack(anchor="w")
 
         def save_settings():
             nonlocal model, session, code_panel, theme
@@ -831,15 +970,21 @@ def launch_chat_ui(
                 return
             save_api_key(new_key)
             new_chat_model = model_entry.get().strip() or DEFAULT_MODEL
+            mic_choice = mic_entry.current()
+            new_voice_device = None if mic_choice <= 0 else mic_devices[mic_choice - 1][0]
             save_app_config({
                 "model": new_chat_model,
                 "code_model": code_model_var.get().strip() or DEFAULT_CODE_MODEL,
                 "share_chat_code_model": share_models_var.get(),
                 "theme": theme_var.get(),
                 "hotkey": hotkey_entry.get().strip() or DEFAULT_HOTKEY,
+                "voice_device": new_voice_device,
                 "personality": pers_text.get("1.0", tk.END).strip(),
                 "language": lang_var.get()
             })
+            from voice import set_voice_input_device
+
+            set_voice_input_device(new_voice_device)
             # Apply the selected chat model now; a Code panel is rebuilt using
             # the current share/separate-code-model choice on its next display.
             model = new_chat_model
@@ -852,7 +997,7 @@ def launch_chat_ui(
                 code_panel = None
             if code_was_visible:
                 switch_to_code()
-            messagebox.showinfo("Success", get_text("settings_saved_msg", lang), parent=settings_win)
+            messagebox.showinfo(get_text("settings_success_title", lang), get_text("settings_saved_msg", lang), parent=settings_win)
             settings_win.destroy()
 
         tk.Button(
@@ -894,7 +1039,7 @@ def launch_chat_ui(
     file_button.pack(side=tk.LEFT)
     mode_button = tk.Button(
         mode_bar,
-        text="Mode",
+        text=get_text("menu_mode", lang),
         command=lambda: show_dropdown(mode_menu, mode_button),
         relief=tk.FLAT,
         bg=colors["panel"],
@@ -1028,7 +1173,7 @@ def launch_chat_ui(
         try:
             reply = session.ask(message)
         except Exception as error:
-            reply = f"Request failed: {friendly_error(error)}"
+            reply = get_text("request_failed", lang).format(error=friendly_error(error))
         def finish():
             add_message("GD", reply)
             status.set(get_text("status_ready", lang))
@@ -1052,15 +1197,16 @@ def launch_chat_ui(
         nonlocal voice_app
         try:
             if voice_app is None:
-                root.after(0, lambda: status.set("Loading speech model..."))
-                from voice import VoiceAssistant
-                voice_app = VoiceAssistant(debug=DEBUG_CONSOLE)
+                root.after(0, lambda: status.set(get_text("status_loading_voice", lang)))
+                from voice import get_voice_assistant
+
+                voice_app = get_voice_assistant(debug=DEBUG_CONSOLE, device=load_app_config().get("voice_device"))
 
             root.after(0, lambda: [status.set(get_text("status_listening", lang)), mic_button.configure(text=get_text("status_listening", lang))])
             user_text = voice_app.listen_dynamic()
             if not user_text:
                 def finish_empty():
-                    add_message("GD", "I didn't hear anything.")
+                    add_message("GD", get_text("voice_no_speech", lang))
                     status.set(get_text("status_ready", lang))
                     mic_button.configure(text=get_text("btn_voice", lang))
                     set_inputs_enabled(True)
@@ -1073,7 +1219,7 @@ def launch_chat_ui(
             root.after(0, lambda: [add_message("GD", reply), status.set(get_text("status_speaking", lang)), mic_button.configure(text=get_text("status_speaking", lang))])
             voice_app.speak(reply)
         except Exception as error:
-            root.after(0, lambda: add_message("GD", f"Voice request failed: {friendly_error(error)}"))
+            root.after(0, lambda: add_message("GD", get_text("voice_request_failed", lang).format(error=friendly_error(error))))
         finally:
             def restore_ui():
                 status.set(get_text("status_ready", lang))
@@ -1099,7 +1245,7 @@ def launch_chat_ui(
         if code_panel is not None:
             code_panel.pack_forget()
         chat_frame.pack(fill=tk.BOTH, expand=True)
-        root.title(f"{APP_NAME} {APP_VERSION} — Chat")
+        root.title(f"{APP_NAME} {APP_VERSION} — {get_text('mode_chat', lang)}")
         message_box.focus_set()
 
     def switch_to_code() -> None:
@@ -1117,9 +1263,10 @@ def launch_chat_ui(
                 start_dir=os.getcwd(),
                 theme=theme,
                 debug=DEBUG_CONSOLE,
+                lang=lang,
             )
         code_panel.pack(fill=tk.BOTH, expand=True)
-        root.title(f"{APP_NAME} {APP_VERSION} — Code")
+        root.title(f"{APP_NAME} {APP_VERSION} — {get_text('mode_code', lang)}")
 
     def open_terminal_code() -> None:
         """Close this instance before its terminal Code mode begins."""
@@ -1151,10 +1298,10 @@ def launch_chat_ui(
         root.destroy()
         os._exit(0)
 
-    mode_menu.add_command(label="Chat", command=switch_to_chat)
-    mode_menu.add_command(label="Code", command=switch_to_code)
+    mode_menu.add_command(label=get_text("mode_chat", lang), command=switch_to_chat)
+    mode_menu.add_command(label=get_text("mode_code", lang), command=switch_to_code)
     mode_menu.add_separator()
-    mode_menu.add_command(label="Open Code in Terminal", command=open_terminal_code)
+    mode_menu.add_command(label=get_text("mode_open_code_terminal", lang), command=open_terminal_code)
 
     add_message("GD", f"{get_text('welcome_msg', lang)} (Model: {model})")
     message_box.focus_set()
@@ -1239,20 +1386,33 @@ def main() -> int:
         if not lang_res: return 2
         lang = lang_res
 
-        step1_res = run_setup_wizard_step1(lang)
+        step1_res = run_setup_wizard_step1(lang, theme)
         if not step1_res: return 2
-        api_key, model = step1_res
+        api_key, model, code_model, share_models = step1_res
         save_api_key(api_key)
 
-        hotkey_res = run_setup_wizard_step2(lang)
-        if not hotkey_res: return 2
-        hotkey = hotkey_res
+        theme_res = run_setup_wizard_theme(lang)
+        if theme_res is None: return 2
+        theme = theme_res
 
-        pers_res = run_setup_wizard_step3(lang)
+        step2_res = run_setup_wizard_step2(lang, theme)
+        if not step2_res: return 2
+        hotkey, voice_device = step2_res
+
+        pers_res = run_setup_wizard_step3(lang, theme)
         if pers_res is None: return 2
         personality = pers_res
 
-        save_app_config({"model": model, "hotkey": hotkey, "language": lang, "personality": personality})
+        save_app_config({
+            "model": model,
+            "code_model": code_model,
+            "share_chat_code_model": share_models,
+            "theme": theme,
+            "voice_device": voice_device,
+            "hotkey": hotkey,
+            "language": lang,
+            "personality": personality
+        })
 
     try:
         client = load_client(api_key)
@@ -1271,6 +1431,7 @@ def main() -> int:
                 start_dir=arguments.workspace,
                 theme=theme,
                 debug=DEBUG_CONSOLE,
+                lang=lang,
             )
             return 0
         else:
@@ -1280,6 +1441,7 @@ def main() -> int:
                 model=active_code_model,
                 start_dir=arguments.workspace,
                 debug=DEBUG_CONSOLE,
+                lang=lang,
             )
             return 0
 
@@ -1305,7 +1467,12 @@ def main() -> int:
                 daemon=True,
             ).start()
 
-        tray_daemon = TrayDaemon(on_open_chat=open_gui_safely, on_quit=lambda: os._exit(0))
+        tray_daemon = TrayDaemon(
+            on_open_chat=open_gui_safely,
+            on_quit=lambda: os._exit(0),
+            app_name=APP_NAME,
+            app_version=APP_VERSION,
+        )
         threading.Thread(target=tray_daemon.run_tray, daemon=True).start()
 
         try:

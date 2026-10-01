@@ -413,6 +413,7 @@ def take_screenshot() -> dict[str, str]:
         return {
             "status": "SUCCESS",
             "message": f"Screenshot saved with grid overlay to {screenshot_path}.",
+            "path": screenshot_path,
         }
     except Exception as error:
         return {"status": "FAILURE", "message": f"Failed to take screenshot: {error}"}
