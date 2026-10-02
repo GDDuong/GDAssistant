@@ -11,6 +11,7 @@ All notable changes to GD Assistant are documented here.
 ### File Attachments
 
 - Readable text files (code, logs, markdown, config...) are inlined straight into the message in a fenced block, capped at 50k characters per file, so the assistant quotes and edits the real content — and attachments stay visible when the conversation is reloaded later.
+- **Word, Excel, and PowerPoint** (.docx / .xlsx / .pptx) are read locally: document paragraphs, per-slide text, and cell values (with formulas' results) are extracted and inlined like text files — no extra dependencies, and older .doc/.xls/.ppt formats are not supported.
 - Images (PNG/JPG/GIF/WebP), PDFs, and other binary files are sent to Gemini as native attachments on the same turn, so the model can actually see them.
 - Clicking the pending-files note clears the whole queue before sending; sending a message auto-clears it.
 - You can now send a message with only attachments and no text.

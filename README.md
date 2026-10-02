@@ -13,7 +13,7 @@ Gemini is the **brain**; GD Assistant is the **local hands**. The application ke
 - **Code Mode** — an integrated Coding Agent interface, plus a terminal-first CLI for project work.
 - **Chat history** — saved conversations in a collapsible sidebar for both modes, archived or reopened anytime.
 - **Live streaming** — replies appear token-by-token with a Stop button; typed replies render markdown while voice replies stay plain.
-- **File attachments** — a **+** button next to the text box inserts one or more files into your next message in both Chat and Code Mode; text files are quoted in full and images/PDFs are sent for the model to see.
+- **File attachments** — a **+** button next to the text box inserts one or more files into your next message in both Chat and Code Mode; text and Office documents (Word/Excel/PowerPoint) are quoted in full while images/PDFs are sent for the model to see.
 - **Light and Dark themes** — choose the appearance you prefer in Settings.
 - **Flexible Gemini models** — let Chat and Code Mode share one model, or configure a different model for each.
 - **Local memory** — save and retrieve preferences or facts between sessions.
