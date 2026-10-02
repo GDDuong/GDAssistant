@@ -16,6 +16,7 @@ import glob
 import tempfile
 import time
 
+from gd_core.attachments import display_summary, load_binary_parts, prepare_message
 from gd_core.conversations import ConversationStore
 from gd_core.translations import get_text
 from ui_tk.mdrender import configure_tags, insert_markdown, strip_markdown
@@ -44,7 +45,7 @@ from gd_core.local_tools import (
 )
 
 APP_NAME = "GD Assistant"
-APP_VERSION = "v0.5-BETA"
+APP_VERSION = "v0.5.1-BETA"
 _active_root = None
 _active_hwnd = None
 _mutex_handle = None
@@ -816,8 +817,10 @@ class AssistantSession:
         message: str,
         on_text: Callable[[str], None],
         stop_event: threading.Event | None = None,
+        extra_parts: list[Any] | None = None,
     ) -> str:
-        self.history.append(self.types.Content(role="user", parts=[self.types.Part(text=message)]))
+        parts = [self.types.Part(text=message), *(extra_parts or [])]
+        self.history.append(self.types.Content(role="user", parts=parts))
         return send_message_with_tools(
             self.client,
             self.model,
@@ -1261,8 +1264,23 @@ def launch_chat_ui(
         highlightcolor=colors["accent"],
         font=("Segoe UI", 10),
     )
-    transcript.grid(row=0, column=0, columnspan=3, sticky="nsew")
+    transcript.grid(row=0, column=0, columnspan=4, sticky="nsew")
     configure_tags(transcript, colors)
+
+    # The plus button sits left of the text box and queues files for the next
+    # message; text files are inlined, images/PDFs ride along as attachments.
+    attach_button = tk.Button(
+        chat_frame,
+        text="+",
+        width=3,
+        bg=colors["button"],
+        fg=colors["foreground"],
+        activebackground=colors["button_active"],
+        activeforeground=colors["foreground"],
+    )
+    attach_button.grid(row=1, column=0, sticky="w", pady=(12, 0))
+
+    pending_files: list[Path] = []
 
     message_box = tk.Entry(
         chat_frame,
@@ -1272,7 +1290,7 @@ def launch_chat_ui(
         highlightbackground=colors["border"],
         highlightcolor=colors["accent"],
     )
-    message_box.grid(row=1, column=0, sticky="ew", pady=(12, 0))
+    message_box.grid(row=1, column=1, sticky="ew", pady=(12, 0))
 
     send_button = tk.Button(
         chat_frame,
@@ -1282,7 +1300,7 @@ def launch_chat_ui(
         activebackground=colors["accent_active"],
         activeforeground="#ffffff",
     )
-    send_button.grid(row=1, column=1, sticky="e", padx=(8, 0), pady=(12, 0))
+    send_button.grid(row=1, column=2, sticky="e", padx=(8, 0), pady=(12, 0))
 
     mic_button = tk.Button(
         chat_frame,
@@ -1293,7 +1311,29 @@ def launch_chat_ui(
         activebackground=colors["button_active"],
         activeforeground=colors["foreground"],
     )
-    mic_button.grid(row=1, column=2, sticky="e", padx=(6, 0), pady=(12, 0))
+    mic_button.grid(row=1, column=3, sticky="e", padx=(6, 0), pady=(12, 0))
+
+    attach_row = tk.Frame(chat_frame, bg=colors["background"])
+    attach_label = tk.Label(
+        attach_row,
+        anchor="w",
+        bg=colors["background"],
+        fg=colors["muted"],
+        font=("Segoe UI", 8),
+    )
+    attach_label.pack(side=tk.LEFT)
+    attach_clear_button = tk.Button(
+        attach_row,
+        text=get_text("attach_clear", lang),
+        command=lambda: clear_attachments(),
+        relief=tk.FLAT,
+        bg=colors["background"],
+        fg=colors["muted"],
+        activebackground=colors["button_active"],
+        activeforeground=colors["foreground"],
+        font=("Segoe UI", 8),
+    )
+    attach_clear_button.pack(side=tk.LEFT, padx=(6, 0))
 
     status = tk.StringVar(value=get_text("status_ready", lang))
     status_label = tk.Label(
@@ -1303,10 +1343,31 @@ def launch_chat_ui(
         bg=colors["background"],
         fg=colors["foreground"],
     )
-    status_label.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(6, 0))
+    status_label.grid(row=3, column=0, columnspan=4, sticky="ew", pady=(6, 0))
 
-    chat_frame.columnconfigure(0, weight=1)
+    chat_frame.columnconfigure(1, weight=1)
     chat_frame.rowconfigure(0, weight=1)
+
+    def refresh_attachments() -> None:
+        if pending_files:
+            attach_label.configure(text=display_summary(pending_files))
+            attach_row.grid(row=2, column=0, columnspan=4, sticky="w", pady=(4, 0))
+        else:
+            attach_row.grid_remove()
+
+    def clear_attachments() -> None:
+        pending_files.clear()
+        refresh_attachments()
+
+    def open_attach_dialog() -> None:
+        chosen = filedialog.askopenfilenames(parent=root, title=get_text("attach_files_title", lang))
+        for item in chosen:
+            path = Path(item)
+            if path not in pending_files:
+                pending_files.append(path)
+        refresh_attachments()
+
+    attach_button.configure(command=open_attach_dialog)
 
     def add_message(speaker: str, text: str) -> None:
         transcript.configure(state=tk.NORMAL)
@@ -1327,6 +1388,7 @@ def launch_chat_ui(
         message_box.configure(state=state)
         send_button.configure(state=state)
         mic_button.configure(state=state)
+        attach_button.configure(state=state)
 
     stream_pieces: list[str] = []
     stream_render_job: str | None = None
@@ -1423,6 +1485,20 @@ def launch_chat_ui(
             activebackground=colors["button_active"],
             activeforeground=colors["foreground"],
         )
+        attach_button.configure(
+            bg=colors["button"],
+            fg=colors["foreground"],
+            activebackground=colors["button_active"],
+            activeforeground=colors["foreground"],
+        )
+        attach_row.configure(bg=colors["background"])
+        attach_label.configure(bg=colors["background"], fg=colors["muted"])
+        attach_clear_button.configure(
+            bg=colors["background"],
+            fg=colors["muted"],
+            activebackground=colors["button_active"],
+            activeforeground=colors["foreground"],
+        )
         status_label.configure(bg=colors["background"], fg=colors["foreground"])
         configure_tags(transcript, colors)
         chat_sidebar.update_palette(colors)
@@ -1432,6 +1508,7 @@ def launch_chat_ui(
         request_session: AssistantSession,
         request_conv: dict[str, Any] | None,
         stop_event: threading.Event,
+        binary_paths: list[Path] | None = None,
     ) -> None:
         nonlocal active_stop_event
         request_failed = False
@@ -1444,7 +1521,8 @@ def launch_chat_ui(
             root.after(0, schedule_stream_render)
 
         try:
-            reply = request_session.ask_stream(message, on_chunk, stop_event)
+            extra_parts = load_binary_parts(binary_paths) if binary_paths else None
+            reply = request_session.ask_stream(message, on_chunk, stop_event, extra_parts=extra_parts)
         except Exception as error:
             request_failed = True
             reply = get_text("request_failed", lang).format(error=friendly_error(error))
@@ -1475,13 +1553,20 @@ def launch_chat_ui(
     def submit_message(_event: Any = None) -> None:
         nonlocal active_stop_event
         message = message_box.get().strip()
-        if not message: return
-        if message.lower() in {"/quit", "/exit"}:
+        if not message and not pending_files: return
+        if message and message.lower() in {"/quit", "/exit"}:
             root.destroy()
             os._exit(0)
         message_box.delete(0, tk.END)
-        add_message("You", message)
-        persist_chat_message(current_conv, "user", message)
+        files = list(pending_files)
+        clear_attachments()
+        if files:
+            summary = display_summary(files)
+            add_message("You", f"{message}\n{summary}" if message else summary)
+        else:
+            add_message("You", message)
+        request_text, binary_paths = prepare_message(message, files)
+        persist_chat_message(current_conv, "user", request_text)
         stream_pieces.clear()
         stop_event = threading.Event()
         active_stop_event = stop_event
@@ -1491,7 +1576,7 @@ def launch_chat_ui(
         set_send_stop_mode(True)
         threading.Thread(
             target=perform_text_request,
-            args=(f"[TEXT] {message}", session, current_conv, stop_event),
+            args=(f"[TEXT] {request_text}", session, current_conv, stop_event, binary_paths),
             daemon=True,
         ).start()
 

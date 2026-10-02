@@ -85,11 +85,13 @@ class CodeAgentSession:
         max_rounds: int = 15,
         on_text: Callable[[str], None] | None = None,
         stop_event: Any = None,
+        extra_parts: list[Any] | None = None,
     ) -> str:
         """Run the multi-turn agent loop with tool execution."""
         from google.genai import types
 
-        self.history.append(types.Content(role="user", parts=[types.Part(text=user_prompt)]))
+        parts = [types.Part(text=user_prompt), *(extra_parts or [])]
+        self.history.append(types.Content(role="user", parts=parts))
 
         streamed_pieces: list[str] = []
 
