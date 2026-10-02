@@ -37,7 +37,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='GD_Assistant-v0.3.1-BETA',
+    name='GD_Assistant-v0.4-BETA',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
