@@ -937,7 +937,6 @@ def launch_chat_ui(
     def open_settings_dialog():
         settings_win = tk.Toplevel(root)
         settings_win.title(get_text("settings_title", lang))
-        settings_win.geometry("500x665")
         settings_win.resizable(False, False)
         settings_win.configure(padx=20, pady=20, bg=colors["background"])
         settings_win.transient(root)

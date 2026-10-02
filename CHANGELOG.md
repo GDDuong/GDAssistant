@@ -10,12 +10,22 @@ All notable changes to GD Assistant are documented here.
 
 ### Voice & Wake Word
 
-- New always-on listener (`wakeword.py`): continuous microphone monitoring gated by an energy voice-activity detector, so the lightweight `tiny.en` speech model only transcribes short speech clips and stays easy on the CPU.
-- Tolerant phrase matching (exact phrase, most words heard, or fuzzy single-word match) forgives common mishearings, and a short cooldown prevents double triggers.
+- New always-on listener (`wakeword.py`): continuous microphone monitoring gated by an energy voice-activity detector, so the shared `base.en` speech model only transcribes short speech clips and stays easy on the CPU — no second model is loaded.
+- Tolerant phrase matching forgives common mishearings like "Pay Assistant" — exact phrase, most words heard, or a fuzzy keyword match in short clips — and the decoder is primed with your phrase so it hears it correctly. Only short clips can trigger on the keyword alone, so ordinary sentences that merely mention "assistant" stay asleep. A short cooldown prevents double triggers.
 - The listener pauses while the assistant records or speaks a reply — it never hears its own voice — and resumes automatically, recalibrating the room noise level afterward.
 - New Settings controls: an **Enable wake word (always listening)** checkbox and a **Summoning sentence** field (default `hey assistant`); saving restarts the listener with the new settings.
 - Waking brings the chat window forward (even from the system tray) and starts the same voice flow as the mic button. Wake word applies to Chat Mode; Code Mode ignores wake events.
 - Vietnamese translations cover the new Settings controls.
+
+### Fixes
+
+- The wake listener reacts noticeably faster: a more sensitive voice-activity threshold catches soft speech sooner, and a 0.5 s end-of-speech window replaces the old 0.8 s one, so a summoning phrase is no longer split into two detections before it triggers.
+- The listener logs only meaningful events (startup, calibration, detection, errors) instead of echoing every sound bite it hears to the console.
+- Settings: fixed the Save button being squished to a thin line at the bottom of the dialog — the window now sizes itself to its content instead of using a hardcoded height.
+
+### Other
+
+- Added `ROADMAP.md` — the public development roadmap, from v0.4.x housekeeping through the v1.0 Qt migration.
 
 ---
 

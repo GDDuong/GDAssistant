@@ -112,7 +112,7 @@ Voice input uses **Faster-Whisper** (`base.en`) locally on the CPU. The model wa
 
 Voice replies use **Microsoft Edge TTS** with `en-US-AvaNeural`. If that is unavailable, GD Assistant falls back to Windows SAPI5 through `pyttsx3`.
 
-**Wake word (optional):** enable *always listening* in Settings and GD Assistant waits in the background for your summoning sentence, then starts a voice conversation hands-free. Detection stays lightweight — a small speech model (`tiny.en`) runs only on short speech clips — and the listener pauses while the assistant listens or replies so it never hears its own voice. Wake word works in Chat Mode.
+**Wake word (optional):** enable *always listening* in Settings and GD Assistant waits in the background for your summoning sentence, then starts a voice conversation hands-free. Detection stays lightweight — the same speech model (`base.en`) already loaded for voice input runs only on short speech clips, so nothing extra sits in memory — and the listener pauses while the assistant listens or replies so it never hears its own voice. Wake word works in Chat Mode.
 
 ## Local Data & API Key
 

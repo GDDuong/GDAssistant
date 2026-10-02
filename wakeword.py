@@ -1,7 +1,7 @@
 """Always-listening wake word detector for GD Assistant.
 
-Runs a lightweight Faster-Whisper model (tiny.en) against short speech
-clips gated by an energy VAD, so continuous listening stays cheap on CPU.
+Runs the shared Faster-Whisper speech model against short speech clips
+gated by an energy VAD, so continuous listening stays cheap on CPU.
 """
 
 from __future__ import annotations
@@ -18,13 +18,12 @@ import sounddevice as sd
 SAMPLE_RATE = 16000
 CHUNK_SEC = 0.1
 CALIBRATION_CHUNKS = 3
-SILENCE_SEC = 0.8
+SILENCE_SEC = 0.5
 MIN_SPEECH_SEC = 0.4
 MAX_CLIP_SEC = 6.0
-SPEECH_FACTOR = 1.5
-MIN_THRESHOLD = 0.015
+SPEECH_FACTOR = 1.3
+MIN_THRESHOLD = 0.008
 COOLDOWN_SEC = 2.5
-WAKE_MODEL = "tiny.en"
 
 
 def _normalize(text: str) -> str:
@@ -34,18 +33,32 @@ def _normalize(text: str) -> str:
 
 
 def phrase_in_transcript(transcript: str, phrase: str, min_ratio: float = 0.75) -> bool:
-    """Tolerant match: exact containment, most phrase words heard, or fuzzy single word."""
+    """Tolerant match that survives STT mishearings like 'Pay Assistant' for 'hey assistant'."""
     heard = _normalize(transcript)
     wanted = _normalize(phrase)
     if not heard or not wanted:
         return False
     if wanted in heard:
         return True
+    if difflib.SequenceMatcher(None, wanted, heard).ratio() >= min_ratio:
+        return True
     wanted_words = wanted.split()
     if len(wanted_words) == 1:
-        return difflib.SequenceMatcher(None, wanted, heard).ratio() >= 0.8
-    hits = sum(1 for word in wanted_words if word in heard.split())
-    return hits / len(wanted_words) >= min_ratio
+        return False
+    heard_words = heard.split()
+    hits = sum(1 for word in wanted_words if word in heard_words)
+    if hits / len(wanted_words) >= min_ratio:
+        return True
+    # A short clip where only the keyword survives ("assistance" for "hey
+    # assistant") should wake just like the exact keyword does above. A
+    # longer sentence that merely mentions the keyword is normal speech.
+    if len(heard_words) > 3:
+        return False
+    keyword = wanted_words[-1]
+    return any(
+        difflib.SequenceMatcher(None, keyword, word).ratio() >= 0.84
+        for word in heard_words
+    )
 
 
 class WakeWordListener:
@@ -91,10 +104,12 @@ class WakeWordListener:
     def _run(self) -> None:
         self.log(f"[WAKE] Listener starting (phrase: '{self.phrase}').")
         try:
-            from faster_whisper import WhisperModel
+            from voice import get_voice_assistant
 
-            self._model = WhisperModel(WAKE_MODEL, device="cpu", compute_type="int8")
-            self.log("[WAKE] Wake model ready.")
+            # Share the main base.en model instead of loading a second one:
+            # better accuracy than tiny.en with no extra model resident.
+            self._model = get_voice_assistant(debug=self.debug).stt_model
+            self.log("[WAKE] Sharing the main speech model (base.en).")
         except Exception as error:
             self.log(f"[WAKE ERROR] Could not load wake model: {error}")
             return
@@ -143,8 +158,6 @@ class WakeWordListener:
             threshold = max(noise_floor * SPEECH_FACTOR, MIN_THRESHOLD)
 
             if level > threshold:
-                if not speaking:
-                    self.log("[WAKE] Speech activity detected.")
                 speaking = True
                 silence_samples = 0
             elif speaking:
@@ -180,7 +193,6 @@ class WakeWordListener:
                         self.log(f"[WAKE WARNING] Transcription failed: {error}")
                         continue
 
-                    self.log(f"[WAKE] Heard: '{transcript}'")
                     if phrase_in_transcript(transcript, self.phrase):
                         last_wake = time.monotonic()
                         self.log("[WAKE] Summoning phrase detected!")
@@ -191,5 +203,6 @@ class WakeWordListener:
                                 self.log(f"[WAKE ERROR] Wake callback failed: {error}")
 
     def _transcribe(self, clip: np.ndarray) -> str:
-        segments, _ = self._model.transcribe(clip, beam_size=1)
+        # Priming the decoder with the phrase biases the model toward hearing it correctly.
+        segments, _ = self._model.transcribe(clip, beam_size=1, initial_prompt=self.phrase)
         return " ".join(seg.text for seg in segments).strip()
