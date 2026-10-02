@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import os
 from typing import Any
-from coding_tools import set_workspace, get_workspace
-from code_agent import CodeAgentSession
-from translations import get_text
+from gd_core.coding_tools import set_workspace, get_workspace
+from gd_core.code_agent import CodeAgentSession
+from gd_core.translations import get_text
 
 def launch_coding_cli(
     client: Any,

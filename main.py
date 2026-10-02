@@ -16,14 +16,14 @@ import glob
 import tempfile
 import time
 
-from conversations import ConversationStore
-from mdrender import configure_tags, insert_markdown, strip_markdown
-from sidebar import ConversationSidebar
-from tray import TrayDaemon
-from translations import get_text
-from themes import get_theme
+from gd_core.conversations import ConversationStore
+from gd_core.translations import get_text
+from ui_tk.mdrender import configure_tags, insert_markdown, strip_markdown
+from ui_tk.sidebar import ConversationSidebar
+from ui_tk.themes import get_theme
+from ui_tk.tray import TrayDaemon
 
-from local_tools import (
+from gd_core.local_tools import (
     close_app,
     forget_info,
     get_all_memory,
@@ -565,7 +565,7 @@ def run_setup_wizard_step2(lang: str, theme: str = DEFAULT_THEME) -> tuple[str, 
     tk.Label(root, text=get_text("wizard_step2_heading", lang), font=("Arial", 14, "bold"), **label_options).pack(anchor="w", pady=(0, 5))
     tk.Label(root, text=get_text("wizard_step2_sub", lang), font=("Arial", 9), **label_options).pack(anchor="w", pady=(0, 15))
 
-    from voice import get_input_devices
+    from gd_core.voice import get_input_devices
 
     tk.Label(root, text=get_text("settings_mic_label", lang), font=("Arial", 9, "bold"), **label_options).pack(anchor="w")
     mic_devices = get_input_devices()
@@ -891,7 +891,7 @@ def launch_chat_ui(
     def warm_voice_model() -> None:
         """Preload optional speech components without delaying the interface."""
         try:
-            from voice import preload_tts_voice, preload_voice_assistant
+            from gd_core.voice import preload_tts_voice, preload_voice_assistant
 
             # TTS warm-up is quick and network-bound; the Whisper model load
             # is heavier, so it runs right after on the same background worker.
@@ -1011,7 +1011,7 @@ def launch_chat_ui(
         hotkey_entry.insert(0, app_cfg.get("hotkey", DEFAULT_HOTKEY))
         hotkey_entry.pack(anchor="w", pady=(3, 10))
 
-        from voice import get_input_devices
+        from gd_core.voice import get_input_devices
 
         tk.Label(settings_win, text=get_text("settings_mic_label", lang), font=("Arial", 9, "bold"), **label_options).pack(anchor="w")
         mic_devices = get_input_devices()
@@ -1101,7 +1101,7 @@ def launch_chat_ui(
                 "personality": pers_text.get("1.0", tk.END).strip(),
                 "language": lang_var.get()
             })
-            from voice import set_voice_input_device
+            from gd_core.voice import set_voice_input_device
 
             set_voice_input_device(new_voice_device)
             apply_wake_settings()
@@ -1504,7 +1504,7 @@ def launch_chat_ui(
                 wake_listener.pause()
             if voice_app is None:
                 root.after(0, lambda: status.set(get_text("status_loading_voice", lang)))
-                from voice import get_voice_assistant
+                from gd_core.voice import get_voice_assistant
 
                 voice_app = get_voice_assistant(debug=DEBUG_CONSOLE, device=load_app_config().get("voice_device"))
 
@@ -1568,7 +1568,7 @@ def launch_chat_ui(
         wake_cfg = load_app_config()
         if not wake_cfg.get("wake_word_enabled"):
             return
-        from wakeword import WakeWordListener
+        from gd_core.wakeword import WakeWordListener
 
         wake_listener = WakeWordListener(
             phrase=wake_cfg.get("wake_phrase") or DEFAULT_WAKE_PHRASE,
@@ -1595,7 +1595,7 @@ def launch_chat_ui(
         chat_sidebar.pack_forget()
         chat_frame.pack_forget()
         if code_panel is None:
-            from code_gui import CodeAgentPanel
+            from ui_tk.code_gui import CodeAgentPanel
 
             current_config = load_app_config()
             code_model = get_code_model(current_config, model)
@@ -1775,7 +1775,7 @@ def main() -> int:
         active_code_model = arguments.model or get_code_model(app_config, model)
 
         if arguments.gui or arguments.codegui:
-            from code_gui import launch_coding_gui
+            from ui_tk.code_gui import launch_coding_gui
             launch_coding_gui(
                 client,
                 model=active_code_model,
@@ -1799,7 +1799,7 @@ def main() -> int:
     if arguments.terminal:
         chat_loop(client, model, personality)
     elif arguments.voice:
-        from voice import VoiceAssistant
+        from gd_core.voice import VoiceAssistant
         voice_app = VoiceAssistant(debug=DEBUG_CONSOLE)
         voice_app.run_voice_loop(AssistantSession(client, model, personality))
     else:
