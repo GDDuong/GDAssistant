@@ -125,6 +125,7 @@ This includes:
 api.json       Gemini API key
 config.json    Models, theme, language, hotkey, microphone, and personality
 memory.json    Persistent assistant memory
+history\       Saved chat and code conversations (one JSON file each)
 ```
 
 You can alternatively provide the key through an environment variable:
