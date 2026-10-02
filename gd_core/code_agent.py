@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import Any, Callable
-from coding_tools import (
+from gd_core.coding_tools import (
     CODING_TOOL_DECLARATIONS,
     CODING_TOOL_REGISTRY,
     get_workspace,

@@ -9,13 +9,13 @@ from typing import Any
 import tkinter as tk
 from tkinter import scrolledtext, filedialog
 
-from coding_tools import set_workspace, get_workspace, set_extra_dirs
-from code_agent import CodeAgentSession
-from conversations import ConversationStore
-from mdrender import configure_tags, insert_markdown
-from sidebar import ConversationSidebar
-from themes import get_theme
-from translations import get_text
+from gd_core.coding_tools import set_workspace, get_workspace, set_extra_dirs
+from gd_core.code_agent import CodeAgentSession
+from gd_core.conversations import ConversationStore
+from gd_core.translations import get_text
+from ui_tk.mdrender import configure_tags, insert_markdown
+from ui_tk.sidebar import ConversationSidebar
+from ui_tk.themes import get_theme
 
 class CodeAgentPanel(tk.Frame):
     """Embeddable Coding Agent interface for GD Assistant's main window."""

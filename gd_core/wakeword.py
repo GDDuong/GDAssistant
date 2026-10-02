@@ -104,7 +104,7 @@ class WakeWordListener:
     def _run(self) -> None:
         self.log(f"[WAKE] Listener starting (phrase: '{self.phrase}').")
         try:
-            from voice import get_voice_assistant
+            from gd_core.voice import get_voice_assistant
 
             # Share the main base.en model instead of loading a second one:
             # better accuracy than tiny.en with no extra model resident.

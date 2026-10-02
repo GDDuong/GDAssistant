@@ -6,8 +6,8 @@ import tkinter as tk
 from tkinter import messagebox, simpledialog
 from typing import Any, Callable
 
-from conversations import ConversationStore
-from translations import get_text
+from gd_core.conversations import ConversationStore
+from gd_core.translations import get_text
 
 
 class ConversationSidebar(tk.Frame):
