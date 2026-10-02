@@ -6,16 +6,7 @@ All notable changes to GD Assistant are documented here.
 
 ### Highlights
 
-- **File attachments in Chat and Code Mode** — a **+** button now sits left of the text box in both modes. Pick one or more files; they are shown as a pending list you can clear before sending, and go with your next message.
-
-### File Attachments
-
-- Readable text files (code, logs, markdown, config...) are inlined straight into the message in a fenced block, capped at 50k characters per file, so the assistant quotes and edits the real content — and attachments stay visible when the conversation is reloaded later.
-- **Word, Excel, and PowerPoint** (.docx / .xlsx / .pptx) are read locally: document paragraphs, per-slide text, and cell values (with formulas' results) are extracted and inlined like text files — no extra dependencies, and older .doc/.xls/.ppt formats are not supported.
-- Images (PNG/JPG/GIF/WebP), PDFs, and other binary files are sent to Gemini as native attachments on the same turn, so the model can actually see them.
-- Clicking the pending-files note clears the whole queue before sending; sending a message auto-clears it.
-- You can now send a message with only attachments and no text.
-- New shared helper (`gd_core/attachments.py`) keeps the core UI-free: both modes build the same request text and inline-data parts through it, and the Coding Agent's turn runner accepts extra attachment parts.
+- **Upload any file to chat and code mode** — a **+** button next to the text box lets you attach files to your message: Word, Excel, PowerPoint, images, PDFs, code, and any text file. The assistant reads the real contents and can see images/PDFs directly, so file-based conversations aren't limited to plain text anymore.
 
 ---
 
