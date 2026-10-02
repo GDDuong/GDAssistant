@@ -119,8 +119,12 @@ class VoiceAssistant:
                 except OSError:
                     pass
 
-    def listen_dynamic(self) -> str:
-        """Record audio with automated noise floor calibration and silence detection."""
+    def listen_dynamic(self, on_level=None) -> str:
+        """Record audio with automated noise floor calibration and silence detection.
+
+        on_level: optional callback receiving a normalized 0.0..1.0 mic level
+        for every chunk, so a UI can visualize speech in real time.
+        """
         self.log("[AUDIO] Opening microphone input stream...")
         chunk_duration = 0.1
         chunk_samples = int(SAMPLE_RATE * chunk_duration)
@@ -150,6 +154,14 @@ class VoiceAssistant:
 
                 recording.append(audio_chunk)
                 total_samples += len(audio_chunk)
+
+                if on_level is not None:
+                    # RMS scaled by the speech threshold: ~0 when quiet, ~1 at talk level.
+                    rms = float(np.sqrt(np.mean(np.square(audio_chunk))))
+                    try:
+                        on_level(min(1.0, rms / max(silence_threshold, 1e-9)))
+                    except Exception:
+                        pass
 
                 if volume > silence_threshold:
                     if not has_spoken:

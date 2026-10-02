@@ -71,7 +71,8 @@ class VoiceBubble(QWidget):
         self._state = "hidden"
         self._result_text = ""
         self._phase = 0.0
-        self._level = 0.0  # live mic level 0.0..1.0, set by the caller
+        self._target_level = 0.0  # live mic level 0.0..1.0, set by the caller
+        self._display_level = 0.0  # exponentially smoothed toward the target
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
         self._timer.start(33)
@@ -88,12 +89,18 @@ class VoiceBubble(QWidget):
             self._result_text = result_text
         if state == "hidden":
             super().hide()
+        elif not self.isVisible():
+            # A summoned bubble reveals itself; show() also applies the
+            # no-focus-stealing style once the window handle exists.
+            self.show()
 
     def set_level(self, level: float) -> None:
-        self._level = max(0.0, min(1.0, level))
+        # Raw target from the mic callback; _tick smooths it into self._display_level.
+        self._target_level = max(0.0, min(1.0, level))
 
     def _tick(self) -> None:
         self._phase += 0.12
+        self._display_level += (self._target_level - self._display_level) * 0.35
         self.update()
 
     def paintEvent(self, event) -> None:  # noqa: N802
@@ -130,7 +137,7 @@ class VoiceBubble(QWidget):
 
     def _paint_listening(self, painter, cx, cy, r, color):
         # Outer ring expands with the live mic level (falls back to a gentle pulse).
-        amp = self._level if self._level > 0.01 else (0.3 + 0.2 * math.sin(self._phase * 2))
+        amp = self._display_level if self._display_level > 0.01 else (0.3 + 0.2 * math.sin(self._phase * 2))
         ring_r = r + 6 + amp * 12
         painter.setPen(QPen(color, 2))
         painter.setBrush(Qt.NoBrush)
