@@ -16,6 +16,9 @@ import glob
 import tempfile
 import time
 
+from conversations import ConversationStore
+from mdrender import configure_tags, insert_markdown, strip_markdown
+from sidebar import ConversationSidebar
 from tray import TrayDaemon
 from translations import get_text
 from themes import get_theme
@@ -41,7 +44,7 @@ from local_tools import (
 )
 
 APP_NAME = "GD Assistant"
-APP_VERSION = "v0.3.1-BETA"
+APP_VERSION = "v0.4-BETA"
 _active_root = None
 _active_hwnd = None
 _mutex_handle = None
@@ -76,8 +79,12 @@ def get_system_instruction(personality: str) -> str:
         "When identifying click targets from screenshots, always output coordinates "
         "using a normalized 0 to 1000 integer scale (where x=0, y=0 is top-left and x=1000, y=1000 is bottom-right). "
         "Keep responses concise, conversational, and under 2-3 sentences when possible. "
-        "Do not use markdown formatting like bullet points, bolding, or code blocks so responses "
-        "sound natural when spoken."
+        "Each user message begins with a source tag: [TEXT] means it was typed in the chat box, "
+        "[VOICE] means it was spoken through the microphone. "
+        "Use GitHub-flavored markdown formatting (bold, italics, lists, headings, code blocks, links) "
+        "ONLY when the message begins with [TEXT], because typed replies are displayed on screen. "
+        "When the message begins with [VOICE] or has no tag, reply in plain conversational text with "
+        "absolutely no markdown formatting, so it sounds natural when spoken aloud."
     )
     if personality and personality.strip():
         base += f"\n\nUser's Custom Persona/Instructions:\n{personality.strip()}"
@@ -426,7 +433,7 @@ def run_setup_wizard_lang() -> str | None:
     return result["lang"] if result["success"] else None
 
 def run_setup_wizard_step1(lang: str, theme: str = DEFAULT_THEME) -> tuple[str, str, str, bool] | None:
-    """Wizard Step 1: Input API key and choose the chat/code models."""
+    """Wizard Step 2: Input API key and choose the chat/code models."""
     import tkinter as tk
     from tkinter import messagebox
     from tkinter import ttk
@@ -510,7 +517,7 @@ def run_setup_wizard_step1(lang: str, theme: str = DEFAULT_THEME) -> tuple[str, 
     return (result["key"], result["model"], result["code_model"], result["share"])
 
 def run_setup_wizard_theme(lang: str) -> str | None:
-    """Wizard Step 2: Pick the interface theme."""
+    """Wizard Step 1: Pick the interface theme."""
     import tkinter as tk
     result = {"theme": DEFAULT_THEME, "success": False}
 
@@ -648,10 +655,6 @@ def load_client(api_key: str) -> Any:
         raise RuntimeError("Missing dependency. Run: python -m pip install -r requirements.txt") from error
     return genai.Client(api_key=api_key)
 
-def get_response_text(response: Any) -> str:
-    text = getattr(response, "text", None)
-    return text.strip() if text and text.strip() else "I couldn't generate a text response."
-
 def execute_tool_call(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     log_debug(f"[TOOL REQUEST] Executing tool '{name}' with arguments: {arguments}")
     handler = TOOL_REGISTRY.get(name)
@@ -669,20 +672,85 @@ def execute_tool_call(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     log_debug(f"[TOOL RESULT] Status: {status} | Details: {details}")
     return result
 
-def send_message_with_tools(client: Any, model: str, config: Any, history: list[Any]) -> str:
+def _response_parts(item: Any) -> list[Any]:
+    candidates = getattr(item, "candidates", None) or []
+    content = getattr(candidates[0], "content", None) if candidates else None
+    return list(getattr(content, "parts", None) or [])
+
+def send_message_with_tools(
+    client: Any,
+    model: str,
+    config: Any,
+    history: list[Any],
+    on_text: Callable[[str], None] | None = None,
+    stop_event: threading.Event | None = None,
+) -> str:
     from google.genai import types
+
+    streamed_pieces: list[str] = []
+
+    def emit_text(text: str) -> None:
+        if not text:
+            return
+        streamed_pieces.append(text)
+        if on_text is not None:
+            on_text(text)
+
+    def stream_round() -> tuple[list[Any], bool]:
+        parts: list[Any] = []
+        try:
+            stream = client.models.generate_content_stream(model=model, contents=history, config=config)
+            for chunk in stream:
+                if stop_event is not None and stop_event.is_set():
+                    return parts, True
+                for part in _response_parts(chunk):
+                    parts.append(part)
+                    text = getattr(part, "text", None)
+                    if text and not getattr(part, "thought", False):
+                        emit_text(text)
+        except Exception as error:
+            if parts:
+                log_debug(f"[GEMINI API] Stream interrupted mid-response: {type(error).__name__}: {error}")
+                return parts, True
+            log_debug(f"[GEMINI API] Streaming unavailable ({type(error).__name__}); using standard request.")
+            response = client.models.generate_content(model=model, contents=history, config=config)
+            return _response_parts(response), False
+        return parts, False
+
     for round_num in range(1, MAX_TOOL_ROUNDS + 1):
         log_debug(f"[GEMINI API] Sending prompt turn to model ({model}) [Round {round_num}]...")
-        response = client.models.generate_content(model=model, contents=history, config=config)
-        function_calls = getattr(response, "function_calls", None) or []
+        parts, interrupted = stream_round()
+        function_calls = [
+            part.function_call for part in parts if getattr(part, "function_call", None) is not None
+        ]
+
+        if interrupted:
+            # A truncated turn must not carry dangling function calls, or the
+            # next request would demand tool responses that never ran.
+            safe_parts = [part for part in parts if getattr(part, "function_call", None) is None]
+            if safe_parts:
+                history.append(types.Content(role="model", parts=safe_parts))
+            return "".join(streamed_pieces)
 
         if not function_calls:
             log_debug("[GEMINI API] Received direct text response.")
-            history.append(response.candidates[0].content)
-            return get_response_text(response)
+            history.append(types.Content(role="model", parts=parts))
+            text = "".join(
+                str(getattr(part, "text", "") or "")
+                for part in parts
+                if not getattr(part, "thought", False)
+            )
+            if on_text is not None and streamed_pieces:
+                text = "".join(streamed_pieces)
+            return text if text.strip() else "I couldn't generate a text response."
 
         log_debug(f"[GEMINI API] Received {len(function_calls)} function call request(s).")
-        history.append(response.candidates[0].content)
+        history.append(types.Content(role="model", parts=parts))
+        round_had_text = any(
+            getattr(part, "text", None) and not getattr(part, "thought", False) for part in parts
+        )
+        if round_had_text:
+            emit_text("\n\n")
         result_parts = []
         for tool_call in function_calls:
             arguments = dict(tool_call.args or {})
@@ -707,7 +775,13 @@ def send_message_with_tools(client: Any, model: str, config: Any, history: list[
     raise RuntimeError("The assistant requested too many consecutive tool calls.")
 
 class AssistantSession:
-    def __init__(self, client: Any, model: str = DEFAULT_MODEL, personality: str = "") -> None:
+    def __init__(
+        self,
+        client: Any,
+        model: str = DEFAULT_MODEL,
+        personality: str = "",
+        seed_messages: list[dict[str, str]] | None = None,
+    ) -> None:
         from google.genai import types
         saved_memory = load_memory()
         memory_prompt = (
@@ -722,11 +796,33 @@ class AssistantSession:
             tools=[types.Tool(function_declarations=TOOL_DECLARATIONS)],
             automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
         )
-        self.history: list[Any] = []
+        self.history: list[Any] = [
+            types.Content(
+                role="model" if str(message.get("role")) == "assistant" else "user",
+                parts=[types.Part(text=str(message.get("content", "")))],
+            )
+            for message in (seed_messages or [])
+        ]
 
     def ask(self, message: str) -> str:
         self.history.append(self.types.Content(role="user", parts=[self.types.Part(text=message)]))
         return send_message_with_tools(self.client, self.model, self.config, self.history)
+
+    def ask_stream(
+        self,
+        message: str,
+        on_text: Callable[[str], None],
+        stop_event: threading.Event | None = None,
+    ) -> str:
+        self.history.append(self.types.Content(role="user", parts=[self.types.Part(text=message)]))
+        return send_message_with_tools(
+            self.client,
+            self.model,
+            self.config,
+            self.history,
+            on_text=on_text,
+            stop_event=stop_event,
+        )
 
 def chat_loop(client: Any, model: str, personality: str = "") -> None:
     session = AssistantSession(client, model, personality)
@@ -781,7 +877,7 @@ def launch_chat_ui(
     global _active_root, _active_hwnd
     try:
         import tkinter as tk
-        from tkinter import scrolledtext, messagebox, ttk
+        from tkinter import scrolledtext, messagebox, ttk, filedialog
     except ImportError as error:
         raise RuntimeError("Tkinter is required.") from error
 
@@ -963,7 +1059,7 @@ def launch_chat_ui(
         tk.Radiobutton(appearance_group, text=get_text("appearance_light", lang), variable=theme_var, value="light", **radio_options).pack(anchor="w")
 
         def save_settings():
-            nonlocal model, session, code_panel, theme
+            nonlocal model, session, code_panel, theme, personality
             new_key = key_entry.get().strip()
             if not new_key:
                 messagebox.showerror("Error", get_text("err_empty_key", lang), parent=settings_win)
@@ -988,7 +1084,11 @@ def launch_chat_ui(
             # Apply the selected chat model now; a Code panel is rebuilt using
             # the current share/separate-code-model choice on its next display.
             model = new_chat_model
-            session = AssistantSession(client, model, pers_text.get("1.0", tk.END).strip())
+            personality = pers_text.get("1.0", tk.END).strip()
+            session = AssistantSession(
+                client, model, personality,
+                seed_messages=(current_conv or {}).get("messages"),
+            )
             theme = theme_var.get()
             apply_chat_theme(theme)
             code_was_visible = code_panel is not None and bool(code_panel.winfo_manager())
@@ -1017,6 +1117,73 @@ def launch_chat_ui(
 
     mode_bar = tk.Frame(root, bg=colors["panel"], padx=4, pady=3)
     mode_bar.pack(fill=tk.X, side=tk.TOP, pady=(0, 8))
+
+    store = ConversationStore()
+    current_conv: dict[str, Any] | None = None
+
+    def persist_chat_message(conv: dict[str, Any] | None, role: str, content: str) -> None:
+        if conv is None:
+            return
+        store.append_message(conv["id"], role, content)
+        chat_sidebar.refresh()
+
+    def apply_chat_conversation(conv: dict[str, Any]) -> None:
+        nonlocal current_conv, session
+        current_conv = conv
+        session = AssistantSession(
+            client, model, personality, seed_messages=conv.get("messages") or []
+        )
+        transcript.configure(state=tk.NORMAL)
+        transcript.delete("1.0", tk.END)
+        transcript.configure(state=tk.DISABLED)
+        for message in conv.get("messages") or []:
+            content = str(message.get("content", ""))
+            if message.get("role") == "user":
+                add_message("You", content)
+            else:
+                add_markdown_message("GD", content)
+        chat_sidebar.set_current(conv["id"])
+
+    def start_new_chat() -> None:
+        conv = store.create_conversation("chat", title=get_text("sidebar_new_chat", lang))
+        apply_chat_conversation(conv)
+
+    def open_chat_conversation(conv_id: str | None) -> None:
+        if conv_id is None:
+            start_new_chat()
+            return
+        conv = store.load_conversation(conv_id)
+        if conv is not None and conv.get("type") == "chat":
+            apply_chat_conversation(conv)
+
+    def convert_chat_to_code(conv_id: str) -> None:
+        conv = store.load_conversation(conv_id)
+        if conv is None or conv.get("type") != "chat":
+            return
+        if not messagebox.askyesno(
+            get_text("ctx_to_code", lang), get_text("convert_confirm", lang), parent=root
+        ):
+            return
+        chosen = filedialog.askdirectory(parent=root, title=get_text("convert_pick_dir", lang))
+        if not chosen:
+            return
+        store.convert_to_code(conv_id, chosen)
+        chat_sidebar.refresh()
+        if current_conv is not None and current_conv["id"] == conv_id:
+            start_new_chat()
+        switch_to_code(conv_id)
+
+    chat_sidebar = ConversationSidebar(
+        root,
+        store,
+        "chat",
+        colors,
+        lang,
+        on_open=open_chat_conversation,
+        on_new=start_new_chat,
+        on_convert=convert_chat_to_code,
+    )
+    chat_sidebar.pack(side=tk.LEFT, fill=tk.Y)
 
     def show_dropdown(menu: Any, button: Any) -> None:
         """Open a reliable themed popup under one of the custom menu buttons."""
@@ -1068,8 +1235,10 @@ def launch_chat_ui(
         insertbackground=colors["foreground"],
         highlightbackground=colors["border"],
         highlightcolor=colors["accent"],
+        font=("Segoe UI", 10),
     )
     transcript.grid(row=0, column=0, columnspan=3, sticky="nsew")
+    configure_tags(transcript, colors)
 
     message_box = tk.Entry(
         chat_frame,
@@ -1121,11 +1290,74 @@ def launch_chat_ui(
         transcript.configure(state=tk.DISABLED)
         transcript.see(tk.END)
 
+    def add_markdown_message(speaker: str, text: str) -> None:
+        transcript.configure(state=tk.NORMAL)
+        transcript.insert(tk.END, f"{speaker}: ")
+        insert_markdown(transcript, text)
+        transcript.insert(tk.END, "\n\n")
+        transcript.configure(state=tk.DISABLED)
+        transcript.see(tk.END)
+
     def set_inputs_enabled(enabled: bool) -> None:
         state = tk.NORMAL if enabled else tk.DISABLED
         message_box.configure(state=state)
         send_button.configure(state=state)
         mic_button.configure(state=state)
+
+    stream_pieces: list[str] = []
+    stream_render_job: str | None = None
+
+    def begin_stream_block() -> None:
+        transcript.configure(state=tk.NORMAL)
+        transcript.insert(tk.END, "GD: ")
+        transcript.mark_set("stream_start", "end-1c")
+        transcript.mark_gravity("stream_start", tk.LEFT)
+        transcript.configure(state=tk.DISABLED)
+
+    def end_stream_block() -> None:
+        if "stream_start" in transcript.mark_names():
+            transcript.mark_unset("stream_start")
+
+    def render_stream_text() -> None:
+        nonlocal stream_render_job
+        stream_render_job = None
+        if "stream_start" not in transcript.mark_names():
+            return
+        transcript.configure(state=tk.NORMAL)
+        transcript.delete("stream_start", "end-1c")
+        insert_markdown(transcript, "".join(stream_pieces))
+        transcript.configure(state=tk.DISABLED)
+        transcript.see(tk.END)
+
+    def schedule_stream_render() -> None:
+        nonlocal stream_render_job
+        if stream_render_job is None:
+            stream_render_job = root.after(50, render_stream_text)
+
+    active_stop_event: threading.Event | None = None
+
+    def set_send_stop_mode(stop_mode: bool) -> None:
+        if stop_mode:
+            send_button.configure(
+                text=get_text("btn_stop", lang),
+                command=stop_current_request,
+                state=tk.NORMAL,
+                bg=colors["error"],
+                activebackground=colors["error"],
+            )
+        else:
+            send_button.configure(
+                text=get_text("btn_send", lang),
+                command=submit_message,
+                bg=colors["accent"],
+                activebackground=colors["accent_active"],
+                state=tk.NORMAL,
+            )
+
+    def stop_current_request() -> None:
+        if active_stop_event is not None:
+            active_stop_event.set()
+        status.set(get_text("status_stopping", lang))
 
     def apply_chat_theme(theme_name: str) -> None:
         """Apply the selected shared appearance to the active Chat widgets."""
@@ -1168,20 +1400,56 @@ def launch_chat_ui(
             activeforeground=colors["foreground"],
         )
         status_label.configure(bg=colors["background"], fg=colors["foreground"])
+        configure_tags(transcript, colors)
+        chat_sidebar.update_palette(colors)
 
-    def perform_text_request(message: str) -> None:
+    def perform_text_request(
+        message: str,
+        request_session: AssistantSession,
+        request_conv: dict[str, Any] | None,
+        stop_event: threading.Event,
+    ) -> None:
+        nonlocal active_stop_event
+        request_failed = False
+        streamed = False
+
+        def on_chunk(chunk: str) -> None:
+            nonlocal streamed
+            streamed = True
+            stream_pieces.append(chunk)
+            root.after(0, schedule_stream_render)
+
         try:
-            reply = session.ask(message)
+            reply = request_session.ask_stream(message, on_chunk, stop_event)
         except Exception as error:
+            request_failed = True
             reply = get_text("request_failed", lang).format(error=friendly_error(error))
+
         def finish():
-            add_message("GD", reply)
+            nonlocal active_stop_event
+            active_stop_event = None
+            if stream_render_job is not None:
+                root.after_cancel(stream_render_job)
+            render_stream_text()
+            transcript.configure(state=tk.NORMAL)
+            if request_failed:
+                transcript.insert(tk.END, reply)
+            elif not streamed:
+                insert_markdown(transcript, reply)
+            transcript.insert(tk.END, "\n\n")
+            transcript.configure(state=tk.DISABLED)
+            transcript.see(tk.END)
+            end_stream_block()
+            if not request_failed and reply:
+                persist_chat_message(request_conv, "assistant", reply)
+            set_send_stop_mode(False)
             status.set(get_text("status_ready", lang))
             set_inputs_enabled(True)
             message_box.focus_set()
         root.after(0, finish)
 
     def submit_message(_event: Any = None) -> None:
+        nonlocal active_stop_event
         message = message_box.get().strip()
         if not message: return
         if message.lower() in {"/quit", "/exit"}:
@@ -1189,12 +1457,24 @@ def launch_chat_ui(
             os._exit(0)
         message_box.delete(0, tk.END)
         add_message("You", message)
+        persist_chat_message(current_conv, "user", message)
+        stream_pieces.clear()
+        stop_event = threading.Event()
+        active_stop_event = stop_event
         status.set(get_text("status_thinking", lang))
         set_inputs_enabled(False)
-        threading.Thread(target=perform_text_request, args=(message,), daemon=True).start()
+        begin_stream_block()
+        set_send_stop_mode(True)
+        threading.Thread(
+            target=perform_text_request,
+            args=(f"[TEXT] {message}", session, current_conv, stop_event),
+            daemon=True,
+        ).start()
 
     def perform_voice_request() -> None:
         nonlocal voice_app
+        request_session = session
+        request_conv = current_conv
         try:
             if voice_app is None:
                 root.after(0, lambda: status.set(get_text("status_loading_voice", lang)))
@@ -1213,10 +1493,10 @@ def launch_chat_ui(
                 root.after(0, finish_empty)
                 return
 
-            root.after(0, lambda: [add_message("You (Voice)", user_text), status.set(get_text("status_thinking", lang)), mic_button.configure(text=get_text("status_thinking", lang))])
-            reply = session.ask(user_text)
+            root.after(0, lambda: [add_message("You (Voice)", user_text), persist_chat_message(request_conv, "user", user_text), status.set(get_text("status_thinking", lang)), mic_button.configure(text=get_text("status_thinking", lang))])
+            reply = strip_markdown(request_session.ask(f"[VOICE] {user_text}"))
 
-            root.after(0, lambda: [add_message("GD", reply), status.set(get_text("status_speaking", lang)), mic_button.configure(text=get_text("status_speaking", lang))])
+            root.after(0, lambda: [add_message("GD", reply), persist_chat_message(request_conv, "assistant", reply), status.set(get_text("status_speaking", lang)), mic_button.configure(text=get_text("status_speaking", lang))])
             voice_app.speak(reply)
         except Exception as error:
             root.after(0, lambda: add_message("GD", get_text("voice_request_failed", lang).format(error=friendly_error(error))))
@@ -1244,12 +1524,16 @@ def launch_chat_ui(
     def switch_to_chat() -> None:
         if code_panel is not None:
             code_panel.pack_forget()
+        chat_sidebar.pack_forget()
+        chat_frame.pack_forget()
+        chat_sidebar.pack(side=tk.LEFT, fill=tk.Y)
         chat_frame.pack(fill=tk.BOTH, expand=True)
         root.title(f"{APP_NAME} {APP_VERSION} — {get_text('mode_chat', lang)}")
         message_box.focus_set()
 
-    def switch_to_code() -> None:
+    def switch_to_code(conversation_id: str | None = None) -> None:
         nonlocal code_panel
+        chat_sidebar.pack_forget()
         chat_frame.pack_forget()
         if code_panel is None:
             from code_gui import CodeAgentPanel
@@ -1264,7 +1548,10 @@ def launch_chat_ui(
                 theme=theme,
                 debug=DEBUG_CONSOLE,
                 lang=lang,
+                conversation_id=conversation_id,
             )
+        elif conversation_id:
+            code_panel.load_conversation(conversation_id)
         code_panel.pack(fill=tk.BOTH, expand=True)
         root.title(f"{APP_NAME} {APP_VERSION} — {get_text('mode_code', lang)}")
 
@@ -1303,7 +1590,12 @@ def launch_chat_ui(
     mode_menu.add_separator()
     mode_menu.add_command(label=get_text("mode_open_code_terminal", lang), command=open_terminal_code)
 
-    add_message("GD", f"{get_text('welcome_msg', lang)} (Model: {model})")
+    recent_chats = store.list_conversations("chat")
+    if recent_chats:
+        apply_chat_conversation(recent_chats[0])
+    else:
+        start_new_chat()
+        add_message("GD", f"{get_text('welcome_msg', lang)} (Model: {model})")
     message_box.focus_set()
     root.mainloop()
 
@@ -1386,14 +1678,14 @@ def main() -> int:
         if not lang_res: return 2
         lang = lang_res
 
+        theme_res = run_setup_wizard_theme(lang)
+        if theme_res is None: return 2
+        theme = theme_res
+
         step1_res = run_setup_wizard_step1(lang, theme)
         if not step1_res: return 2
         api_key, model, code_model, share_models = step1_res
         save_api_key(api_key)
-
-        theme_res = run_setup_wizard_theme(lang)
-        if theme_res is None: return 2
-        theme = theme_res
 
         step2_res = run_setup_wizard_step2(lang, theme)
         if not step2_res: return 2

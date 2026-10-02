@@ -12,6 +12,9 @@ from typing import Any
 # Global workspace directory anchor
 CURRENT_WORKSPACE: Path = Path.cwd().resolve()
 
+# Additional read-only directories the agent may inspect for reference.
+EXTRA_REFERENCE_DIRS: list[Path] = []
+
 def set_workspace(path: str) -> bool:
     """Set the active workspace directory for coding operations."""
     global CURRENT_WORKSPACE
@@ -24,8 +27,29 @@ def set_workspace(path: str) -> bool:
 def get_workspace() -> Path:
     return CURRENT_WORKSPACE
 
-def _resolve_safe_path(rel_or_abs_path: str) -> Path | None:
-    """Ensure file paths stay within the active workspace boundary."""
+def set_extra_dirs(paths: list[str] | None) -> None:
+    """Replace the read-only reference directories available to the agent."""
+    global EXTRA_REFERENCE_DIRS
+    resolved: list[Path] = []
+    for path in paths or []:
+        try:
+            candidate = Path(path).resolve()
+        except Exception:
+            continue
+        if candidate.is_dir():
+            resolved.append(candidate)
+    EXTRA_REFERENCE_DIRS = resolved
+
+def _display_path(target: Path) -> str:
+    """Show workspace-relative paths; reference files keep their absolute path."""
+    try:
+        relative = os.path.relpath(target, CURRENT_WORKSPACE)
+    except ValueError:
+        return str(target)
+    return relative if not relative.startswith("..") else str(target)
+
+def _resolve_safe_path(rel_or_abs_path: str, allow_reference: bool = False) -> Path | None:
+    """Ensure paths stay inside the workspace (writes) or reference dirs (reads)."""
     try:
         candidate = Path(rel_or_abs_path)
         target = candidate if candidate.is_absolute() else (CURRENT_WORKSPACE / candidate)
@@ -33,13 +57,17 @@ def _resolve_safe_path(rel_or_abs_path: str) -> Path | None:
         # Must be equal to or inside CURRENT_WORKSPACE
         if CURRENT_WORKSPACE in target.parents or target == CURRENT_WORKSPACE:
             return target
+        if allow_reference:
+            for reference in EXTRA_REFERENCE_DIRS:
+                if reference in target.parents or target == reference:
+                    return target
         return None
     except Exception:
         return None
 
 def list_directory(relative_path: str = ".", max_entries: int = 60) -> dict[str, Any]:
     """List directory contents, filtering out common build/cache folders."""
-    target_dir = _resolve_safe_path(relative_path)
+    target_dir = _resolve_safe_path(relative_path, allow_reference=True)
     if not target_dir or not target_dir.is_dir():
         return {"status": "FAILURE", "message": f"Invalid workspace directory: {relative_path}"}
 
@@ -53,7 +81,7 @@ def list_directory(relative_path: str = ".", max_entries: int = 60) -> dict[str,
                 continue
             item_type = "DIR " if entry.is_dir() else "FILE"
             size = f"({entry.stat().st_size} bytes)" if entry.is_file() else ""
-            rel = os.path.relpath(entry.path, CURRENT_WORKSPACE)
+            rel = _display_path(Path(entry.path))
             results.append(f"[{item_type}] {rel} {size}".strip())
             if len(results) >= max_entries:
                 results.append(f"... (truncated at {max_entries} items)")
@@ -65,7 +93,7 @@ def list_directory(relative_path: str = ".", max_entries: int = 60) -> dict[str,
 
 def read_file_range(file_path: str, start_line: int = 1, end_line: int = 200) -> dict[str, Any]:
     """Read a slice of source code with 1-based line numbers."""
-    target = _resolve_safe_path(file_path)
+    target = _resolve_safe_path(file_path, allow_reference=True)
     if not target or not target.is_file():
         return {"status": "FAILURE", "message": f"File not found within workspace: {file_path}"}
 
@@ -81,7 +109,7 @@ def read_file_range(file_path: str, start_line: int = 1, end_line: int = 200) ->
             return {"status": "FAILURE", "message": f"Start line {start} exceeds total lines ({total})."}
 
         numbered = [f"{i:4d} | {lines[i-1].rstrip()}" for i in range(start, end + 1)]
-        rel_path = os.path.relpath(target, CURRENT_WORKSPACE)
+        rel_path = _display_path(target)
         output = f"File: {rel_path} (Lines {start}-{end} of {total})\n" + "\n".join(numbered)
         return {"status": "SUCCESS", "message": output}
     except Exception as e:
@@ -169,7 +197,7 @@ def _is_python_source(content: str) -> bool:
 
 def search_code(query: str, relative_path: str = ".") -> dict[str, Any]:
     """Search for regex or text matches across project files."""
-    target_dir = _resolve_safe_path(relative_path)
+    target_dir = _resolve_safe_path(relative_path, allow_reference=True)
     if not target_dir or not target_dir.is_dir():
         return {"status": "FAILURE", "message": f"Directory not found: {relative_path}"}
 
@@ -189,7 +217,7 @@ def search_code(query: str, relative_path: str = ".") -> dict[str, Any]:
                     with open(full_path, "r", encoding="utf-8", errors="ignore") as f:
                         for line_no, line in enumerate(f, start=1):
                             if pattern.search(line):
-                                rel = os.path.relpath(full_path, CURRENT_WORKSPACE)
+                                rel = _display_path(full_path)
                                 matches.append(f"{rel}:{line_no} | {line.strip()[:140]}")
                                 if len(matches) >= 35:
                                     break

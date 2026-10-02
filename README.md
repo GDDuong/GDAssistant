@@ -1,6 +1,6 @@
 # GD Assistant
 
-> A Windows desktop assistant powered by Google Gemini — currently in **v0.3.1-BETA**.
+> A Windows desktop assistant powered by Google Gemini — currently in **v0.4-BETA**.
 
 GD Assistant combines Gemini's reasoning with carefully scoped local tools. Use it for conversation, voice interaction, limited desktop assistance, persistent local memory, and workspace-focused coding help.
 
@@ -10,6 +10,8 @@ Gemini is the **brain**; GD Assistant is the **local hands**. The application ke
 
 - **Chat Mode** — a desktop chat interface with optional voice input and spoken replies.
 - **Code Mode** — an integrated Coding Agent interface, plus a terminal-first CLI for project work.
+- **Chat history** — saved conversations in a collapsible sidebar for both modes, archived or reopened anytime.
+- **Live streaming** — replies appear token-by-token with a Stop button; typed replies render markdown while voice replies stay plain.
 - **Light and Dark themes** — choose the appearance you prefer in Settings.
 - **Flexible Gemini models** — let Chat and Code Mode share one model, or configure a different model for each.
 - **Local memory** — save and retrieve preferences or facts between sessions.
@@ -155,7 +157,7 @@ Start the app:
 python main.py
 ```
 
-The first launch opens the setup wizard for your Gemini API key, Chat and Code models, theme, microphone, hotkey, and personality.
+The first launch opens the setup wizard to pick your theme, enter your Gemini API key with Chat and Code models, then choose your microphone, hotkey, and personality.
 
 ## Building the executable
 
@@ -163,19 +165,19 @@ Install PyInstaller, then build the windowed one-file release:
 
 ```powershell
 python -m pip install pyinstaller
-python -m PyInstaller --noconfirm --clean GD_Assistant-v0.3.1-BETA.spec
+python -m PyInstaller --noconfirm --clean GD_Assistant-v0.4-BETA.spec
 ```
 
 The finished build is created at:
 
 ```text
-dist\GD_Assistant-v0.3.1-BETA.exe
+dist\GD_Assistant-v0.4-BETA.exe
 ```
 
 ## Project Status
 
-**Current version:** `v0.3.1-BETA`
+**Current version:** `v0.4-BETA`
 
 GD Assistant is an active beta project on the road to v1.0. Features, supported Gemini models, local tools, and safety rules may evolve as the project is tested and improved.
 
-See [CHANGELOG.md](CHANGELOG.md) for v0.3.1-BETA release notes.
+See [CHANGELOG.md](CHANGELOG.md) for v0.4-BETA release notes.

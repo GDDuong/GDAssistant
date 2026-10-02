@@ -204,7 +204,7 @@ class VoiceAssistant:
                     self.speak("Goodbye!")
                     break
 
-                reply = session.ask(user_text)
+                reply = session.ask(f"[VOICE] {user_text}")
                 print(f"GD: {reply}")
                 self.speak(reply)
 

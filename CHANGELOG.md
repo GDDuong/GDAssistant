@@ -2,6 +2,38 @@
 
 All notable changes to GD Assistant are documented here.
 
+## v0.4-BETA
+
+### Highlights
+
+- **Chat history** — a collapsible sidebar in Chat Mode and Code Mode lists your saved conversations, with New Chat / New Project at the top, right-click options (open, rename, archive, unarchive, delete), and JSON files stored in `%APPDATA%\GD Assistant\history`.
+- **Live token streaming** — replies appear as they are generated in Chat and Code Mode, with a red **Stop** button that interrupts mid-stream without corrupting the conversation.
+- **Markdown replies** — typed requests now get formatted answers (headings, bold, italics, inline and fenced code, lists, links), while voice requests stay plain text so they sound natural spoken aloud.
+
+### Chat & Projects
+
+- Conversations persist across restarts and reopen with their full transcript.
+- Code Mode conversations can have their own project workspace plus additional read-only reference directories, injected into the agent's instructions.
+- A Chat conversation can be converted into a Code Mode project (one-way), importing the whole transcript as context.
+- Code Mode chats can no longer be turned back into normal chats, keeping agent history trustworthy.
+
+### Streaming & Control
+
+- Chat and Code agents stream tokens through the Gemini API with an automatic fallback to blocking requests, so what you see is exactly what gets saved.
+- The Send button becomes Stop while the agent works; stopping mid-tool skips pending tool calls safely and keeps model history valid.
+- Streamed markdown is re-rendered at most every 50 ms, keeping long replies smooth.
+
+### Markdown & Voice
+
+- New lightweight markdown renderer (`mdrender.py`) shared by both modes, theme-aware and refreshable on appearance changes.
+- Every user message carries a source tag for the model: `[TEXT]` (typed) enables markdown; `[VOICE]` (microphone) produces plain conversational text.
+- Voice replies are stripped of markdown before display, text-to-speech, and saving, so the transcript matches what you heard.
+- Vietnamese translations cover the sidebar, context menus, streaming controls, and all new status messages.
+
+---
+
+**GD Assistant v0.4-BETA** is an in-progress beta release. Feedback and bug reports are welcome as development continues toward v1.0.
+
 ## v0.3.1-BETA
 
 ### Highlights
@@ -25,8 +57,8 @@ All notable changes to GD Assistant are documented here.
 ### First-Time Setup Wizard
 
 - All wizard windows now use the app's Light/Dark palette, and Light plus English lead the choices as the defaults.
-- Step 1 combines the API key with Chat and Code model dropdowns (including the "use the same model" option).
-- Step 2 selects the theme with large Dark/Light buttons, matching the language picker.
+- Step 1 selects the theme with large Dark/Light buttons, matching the language picker — it comes right after the language choice and before the API key.
+- Step 2 combines the API key with Chat and Code model dropdowns (including the "use the same model" option).
 - Step 3 combines microphone choice with the global hotkey.
 - Setup now also saves the code model, model sharing, theme, and microphone preference — previously it only saved the chat model, hotkey, language, and personality.
 
