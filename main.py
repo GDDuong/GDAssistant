@@ -44,7 +44,7 @@ from local_tools import (
 )
 
 APP_NAME = "GD Assistant"
-APP_VERSION = "v0.4-BETA"
+APP_VERSION = "v0.5-BETA"
 _active_root = None
 _active_hwnd = None
 _mutex_handle = None
@@ -52,6 +52,7 @@ _mutex_handle = None
 DEFAULT_MODEL = "gemini-3.5-flash-lite"
 DEFAULT_CODE_MODEL = "gemini-3.5-flash-lite"
 DEFAULT_HOTKEY = "ctrl+alt+g"
+DEFAULT_WAKE_PHRASE = "hey assistant"
 DEFAULT_LANGUAGE = "en"
 DEFAULT_PERSONALITY = ""
 DEFAULT_THEME = "light"
@@ -314,6 +315,8 @@ def load_app_config() -> dict[str, Any]:
         "hotkey": DEFAULT_HOTKEY,
         "language": DEFAULT_LANGUAGE,
         "voice_device": None,
+        "wake_word_enabled": False,
+        "wake_phrase": DEFAULT_WAKE_PHRASE,
         "personality": DEFAULT_PERSONALITY
     }
     if CONFIG_PATH.exists():
@@ -1029,6 +1032,25 @@ def launch_chat_ui(
         mic_entry.current(mic_position)
         mic_entry.pack(anchor="w", pady=(3, 10))
 
+        wake_var = tk.BooleanVar(value=bool(app_cfg.get("wake_word_enabled", False)))
+        tk.Checkbutton(
+            settings_win,
+            text=get_text("wake_enable_label", lang),
+            variable=wake_var,
+            bg=colors["background"],
+            fg=colors["foreground"],
+            activebackground=colors["background"],
+            activeforeground=colors["foreground"],
+            selectcolor=colors["input"],
+            justify=tk.LEFT,
+            wraplength=450,
+        ).pack(anchor="w", pady=(0, 2))
+
+        tk.Label(settings_win, text=get_text("wake_phrase_label", lang), font=("Arial", 9, "bold"), **label_options).pack(anchor="w")
+        wake_entry = tk.Entry(settings_win, width=60, **entry_options)
+        wake_entry.insert(0, app_cfg.get("wake_phrase", DEFAULT_WAKE_PHRASE))
+        wake_entry.pack(anchor="w", pady=(3, 10))
+
         tk.Label(settings_win, text=get_text("personality_label", lang), font=("Arial", 9, "bold"), **label_options).pack(anchor="w")
         pers_text = tk.Text(settings_win, height=4, width=45, **entry_options)
         pers_text.insert("1.0", app_cfg.get("personality", ""))
@@ -1075,12 +1097,15 @@ def launch_chat_ui(
                 "theme": theme_var.get(),
                 "hotkey": hotkey_entry.get().strip() or DEFAULT_HOTKEY,
                 "voice_device": new_voice_device,
+                "wake_word_enabled": wake_var.get(),
+                "wake_phrase": wake_entry.get().strip() or DEFAULT_WAKE_PHRASE,
                 "personality": pers_text.get("1.0", tk.END).strip(),
                 "language": lang_var.get()
             })
             from voice import set_voice_input_device
 
             set_voice_input_device(new_voice_device)
+            apply_wake_settings()
             # Apply the selected chat model now; a Code panel is rebuilt using
             # the current share/separate-code-model choice on its next display.
             model = new_chat_model
@@ -1476,6 +1501,8 @@ def launch_chat_ui(
         request_session = session
         request_conv = current_conv
         try:
+            if wake_listener is not None:
+                wake_listener.pause()
             if voice_app is None:
                 root.after(0, lambda: status.set(get_text("status_loading_voice", lang)))
                 from voice import get_voice_assistant
@@ -1505,6 +1532,8 @@ def launch_chat_ui(
                 status.set(get_text("status_ready", lang))
                 mic_button.configure(text=get_text("btn_voice", lang))
                 set_inputs_enabled(True)
+                if wake_listener is not None:
+                    wake_listener.resume()
                 message_box.focus_set()
             root.after(0, restore_ui)
 
@@ -1520,6 +1549,37 @@ def launch_chat_ui(
     # starts a second GD Assistant process, so the single-instance guard stays
     # meaningful and both modes can use the same configured API client.
     code_panel: Any | None = None
+
+    wake_listener = None
+
+    def handle_wake() -> None:
+        # Wake word drives Chat Mode only; Code Mode sessions ignore it.
+        if code_panel is not None and code_panel.winfo_manager():
+            return
+        if str(mic_button["state"]) == tk.DISABLED:
+            return
+        root.deiconify()
+        start_voice_listening()
+
+    def apply_wake_settings() -> None:
+        nonlocal wake_listener
+        if wake_listener is not None:
+            wake_listener.stop()
+            wake_listener = None
+        wake_cfg = load_app_config()
+        if not wake_cfg.get("wake_word_enabled"):
+            return
+        from wakeword import WakeWordListener
+
+        wake_listener = WakeWordListener(
+            phrase=wake_cfg.get("wake_phrase") or DEFAULT_WAKE_PHRASE,
+            device=wake_cfg.get("voice_device"),
+            debug=DEBUG_CONSOLE,
+            on_wake=lambda: root.after(0, handle_wake),
+        )
+        wake_listener.start()
+
+    apply_wake_settings()
 
     def switch_to_chat() -> None:
         if code_panel is not None:

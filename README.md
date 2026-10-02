@@ -1,6 +1,6 @@
 # GD Assistant
 
-> A Windows desktop assistant powered by Google Gemini — currently in **v0.4-BETA**.
+> A Windows desktop assistant powered by Google Gemini — currently in **v0.5-BETA**.
 
 GD Assistant combines Gemini's reasoning with carefully scoped local tools. Use it for conversation, voice interaction, limited desktop assistance, persistent local memory, and workspace-focused coding help.
 
@@ -9,6 +9,7 @@ Gemini is the **brain**; GD Assistant is the **local hands**. The application ke
 ## Highlights
 
 - **Chat Mode** — a desktop chat interface with optional voice input and spoken replies.
+- **Wake word** — say your summoning sentence (default "hey assistant") to start a hands-free voice conversation.
 - **Code Mode** — an integrated Coding Agent interface, plus a terminal-first CLI for project work.
 - **Chat history** — saved conversations in a collapsible sidebar for both modes, archived or reopened anytime.
 - **Live streaming** — replies appear token-by-token with a Stop button; typed replies render markdown while voice replies stay plain.
@@ -111,6 +112,8 @@ Voice input uses **Faster-Whisper** (`base.en`) locally on the CPU. The model wa
 
 Voice replies use **Microsoft Edge TTS** with `en-US-AvaNeural`. If that is unavailable, GD Assistant falls back to Windows SAPI5 through `pyttsx3`.
 
+**Wake word (optional):** enable *always listening* in Settings and GD Assistant waits in the background for your summoning sentence, then starts a voice conversation hands-free. Detection stays lightweight — a small speech model (`tiny.en`) runs only on short speech clips — and the listener pauses while the assistant listens or replies so it never hears its own voice. Wake word works in Chat Mode.
+
 ## Local Data & API Key
 
 GD Assistant stores its configuration locally under:
@@ -166,19 +169,19 @@ Install PyInstaller, then build the windowed one-file release:
 
 ```powershell
 python -m pip install pyinstaller
-python -m PyInstaller --noconfirm --clean GD_Assistant-v0.4-BETA.spec
+python -m PyInstaller --noconfirm --clean GD_Assistant-v0.5-BETA.spec
 ```
 
 The finished build is created at:
 
 ```text
-dist\GD_Assistant-v0.4-BETA.exe
+dist\GD_Assistant-v0.5-BETA.exe
 ```
 
 ## Project Status
 
-**Current version:** `v0.4-BETA`
+**Current version:** `v0.5-BETA`
 
 GD Assistant is an active beta project on the road to v1.0. Features, supported Gemini models, local tools, and safety rules may evolve as the project is tested and improved.
 
-See [CHANGELOG.md](CHANGELOG.md) for v0.4-BETA release notes.
+See [CHANGELOG.md](CHANGELOG.md) for v0.5-BETA release notes.

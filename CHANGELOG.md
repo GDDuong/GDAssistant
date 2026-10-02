@@ -2,6 +2,25 @@
 
 All notable changes to GD Assistant are documented here.
 
+## v0.5-BETA
+
+### Highlights
+
+- **Wake word ("summoning sentence")** — an optional always-listening mode hears a phrase like "hey assistant" and starts a voice conversation hands-free, no button or hotkey needed.
+
+### Voice & Wake Word
+
+- New always-on listener (`wakeword.py`): continuous microphone monitoring gated by an energy voice-activity detector, so the lightweight `tiny.en` speech model only transcribes short speech clips and stays easy on the CPU.
+- Tolerant phrase matching (exact phrase, most words heard, or fuzzy single-word match) forgives common mishearings, and a short cooldown prevents double triggers.
+- The listener pauses while the assistant records or speaks a reply — it never hears its own voice — and resumes automatically, recalibrating the room noise level afterward.
+- New Settings controls: an **Enable wake word (always listening)** checkbox and a **Summoning sentence** field (default `hey assistant`); saving restarts the listener with the new settings.
+- Waking brings the chat window forward (even from the system tray) and starts the same voice flow as the mic button. Wake word applies to Chat Mode; Code Mode ignores wake events.
+- Vietnamese translations cover the new Settings controls.
+
+---
+
+**GD Assistant v0.5-BETA** is an in-progress beta release. Feedback and bug reports are welcome as development continues toward v1.0.
+
 ## v0.4-BETA
 
 ### Highlights
