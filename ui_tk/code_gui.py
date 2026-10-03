@@ -9,6 +9,7 @@ from typing import Any
 import tkinter as tk
 from tkinter import scrolledtext, filedialog
 
+from gd_core.attachments import display_summary, load_binary_parts, prepare_message
 from gd_core.coding_tools import set_workspace, get_workspace, set_extra_dirs
 from gd_core.code_agent import CodeAgentSession
 from gd_core.conversations import ConversationStore
@@ -41,6 +42,7 @@ class CodeAgentPanel(tk.Frame):
         self.store = store or ConversationStore()
         self.conv: dict[str, Any] | None = None
         self.extra_dirs: list[str] = []
+        self.pending_files: list[Path] = []
         set_workspace(start_dir)
         self.session = CodeAgentSession(
             self.client, model=self.model, on_status=self.on_agent_status, debug=self.debug
@@ -148,6 +150,32 @@ class CodeAgentPanel(tk.Frame):
         # ---- BOTTOM INPUT BAR ----
         bottom_frame = tk.Frame(self, bg=color["panel"], padx=10, pady=8)
         bottom_frame.pack(fill=tk.X, side=tk.BOTTOM)
+
+        self.attach_btn = tk.Button(
+            bottom_frame,
+            text="+",
+            width=3,
+            command=self.on_attach_files,
+            bg=color["button"],
+            fg=color["foreground"],
+            activebackground=color["button_active"],
+            activeforeground=color["foreground"],
+            relief=tk.FLAT,
+            font=("Segoe UI", 10, "bold"),
+        )
+        self.attach_btn.pack(side=tk.LEFT, padx=(0, 6))
+
+        # Clicking the pending-files note clears the queue before sending.
+        self.attach_label = tk.Label(
+            bottom_frame,
+            text="",
+            bg=color["panel"],
+            fg=color["muted"],
+            font=("Segoe UI", 8),
+            cursor="hand2",
+        )
+        self.attach_label.pack(side=tk.LEFT, padx=(0, 8))
+        self.attach_label.bind("<Button-1>", lambda _event: self.clear_attachments())
 
         self.input_box = tk.Text(
             bottom_frame,
@@ -417,6 +445,36 @@ class CodeAgentPanel(tk.Frame):
             return "break"
         return None
 
+    # --------------------------------------------------------- attachments
+
+    def on_attach_files(self) -> None:
+        if self.is_busy:
+            self.status_var.set(self._text("code_busy_wait"))
+            return
+        chosen = filedialog.askopenfilenames(
+            parent=self, initialdir=str(get_workspace()), title=self._text("attach_files_title")
+        )
+        for item in chosen:
+            path = Path(item)
+            if path not in self.pending_files:
+                self.pending_files.append(path)
+        self._refresh_attachments()
+
+    def clear_attachments(self) -> None:
+        self.pending_files.clear()
+        self._refresh_attachments()
+
+    def _refresh_attachments(self) -> None:
+        if not self.pending_files:
+            self.attach_label.configure(text="")
+            return
+        names = ", ".join(path.name for path in self.pending_files)
+        if len(names) > 60:
+            names = names[:57] + "..."
+        self.attach_label.configure(
+            text=f"{self._text('attach_attached')} ({len(self.pending_files)}): {names}  [{self._text('attach_clear')}]"
+        )
+
     def submit_quick(self, prompt: str) -> None:
         if self.is_busy:
             return
@@ -433,12 +491,20 @@ class CodeAgentPanel(tk.Frame):
         if self.is_busy:
             return
         prompt = self.input_box.get("1.0", tk.END).strip()
-        if not prompt:
+        files = list(self.pending_files)
+        if not prompt and not files:
             return
 
         self.input_box.delete("1.0", tk.END)
-        self._append_message(self._text("code_you"), prompt, "user")
-        self._persist_message("user", prompt)
+        self.clear_attachments()
+        if files:
+            summary = display_summary(files)
+            display = f"{prompt}\n{summary}" if prompt else summary
+        else:
+            display = prompt
+        self._append_message(self._text("code_you"), display, "user")
+        request_text, binary_paths = prepare_message(prompt, files)
+        self._persist_message("user", request_text)
 
         self.is_busy = True
         self.stop_event = threading.Event()
@@ -465,8 +531,9 @@ class CodeAgentPanel(tk.Frame):
             nonlocal streamed
             had_error = False
             try:
+                extra_parts = load_binary_parts(binary_paths) if binary_paths else None
                 response = self.session.execute_turn(
-                    prompt, on_text=on_text, stop_event=self.stop_event
+                    request_text, on_text=on_text, stop_event=self.stop_event, extra_parts=extra_parts
                 )
             except Exception as e:
                 response = self._text("code_execution_error").format(error=e)

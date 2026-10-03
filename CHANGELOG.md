@@ -2,6 +2,14 @@
 
 All notable changes to GD Assistant are documented here.
 
+## v0.5.1-BETA
+
+### Highlights
+
+- **Upload any file to chat and code mode** — a **+** button next to the text box lets you attach files to your message: Word, Excel, PowerPoint, images, PDFs, code, and any text file. The assistant reads the real contents and can see images/PDFs directly, so file-based conversations aren't limited to plain text anymore.
+
+---
+
 ## v0.5-BETA
 
 ### Highlights
