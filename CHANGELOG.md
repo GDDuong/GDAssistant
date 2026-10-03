@@ -2,6 +2,14 @@
 
 All notable changes to GD Assistant are documented here.
 
+## v0.5.1.1-ALPHA
+
+### Highlights
+
+- **Voice orb popup** — during a voice conversation a small floating glass orb appears at the top of the screen: it pulses with the rainbow light while it listens, shows orbiting dots while it thinks, then presents the answer in a pill you can click to open in the app. Toggle it in Settings. This is an ALPHA preview of the new Qt interface, so expect it to change.
+
+---
+
 ## v0.5.1-BETA
 
 ### Highlights

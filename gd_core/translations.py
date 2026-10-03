@@ -142,7 +142,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "mic_default_option": "Mặc định hệ thống",
         "wake_enable_label": "Bật Wake word (luôn lắng nghe)",
         "wake_phrase_label": "Câu triệu hồi:",
-        "voice_orb_label": "Show voice orb popup (Siri-style overlay)",
+        "voice_orb_label": "Hiện orb giọng nói (overlay kiểu Siri)",
         "wizard_step3_title": "GD Assistant - Cài Đặt (4/4: Hành Vi AI)",
         "wizard_step3_heading": "Tùy Chỉnh Hành Vi AI",
         "wizard_step3_sub": "Bước 4: Nhập hướng dẫn phong cách hoặc vai trò tùy chọn.\nCác quy tắc an toàn cốt lõi luôn được bảo vệ trong hệ thống.",

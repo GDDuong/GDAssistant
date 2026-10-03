@@ -1,6 +1,6 @@
 # GD Assistant
 
-> A Windows desktop assistant powered by Google Gemini — currently in **v0.5.1-BETA**.
+> A Windows desktop assistant powered by Google Gemini — currently in **v0.5.1.1-ALPHA**.
 
 GD Assistant combines Gemini's reasoning with carefully scoped local tools. Use it for conversation, voice interaction, limited desktop assistance, persistent local memory, and workspace-focused coding help.
 
@@ -170,19 +170,19 @@ Install PyInstaller, then build the windowed one-file release:
 
 ```powershell
 python -m pip install pyinstaller
-python -m PyInstaller --noconfirm --clean GD_Assistant-v0.5.1-BETA.spec
+python -m PyInstaller --noconfirm --clean GD_Assistant-v0.5.1.1-ALPHA.spec
 ```
 
 The finished build is created at:
 
 ```text
-dist\GD_Assistant-v0.5.1-BETA.exe
+dist\GD_Assistant-v0.5.1.1-ALPHA.exe
 ```
 
 ## Project Status
 
-**Current version:** `v0.5.1-BETA`
+**Current version:** `v0.5.1.1-ALPHA`
 
 GD Assistant is an active beta project on the road to v1.0. Features, supported Gemini models, local tools, and safety rules may evolve as the project is tested and improved.
 
-See [CHANGELOG.md](CHANGELOG.md) for v0.5.1-BETA release notes.
+See [CHANGELOG.md](CHANGELOG.md) for v0.5.1-BETA and v0.5.1.1-ALPHA release notes.

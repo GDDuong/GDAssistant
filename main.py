@@ -45,7 +45,7 @@ from gd_core.local_tools import (
 )
 
 APP_NAME = "GD Assistant"
-APP_VERSION = "v0.5.1-BETA"
+APP_VERSION = "v0.5.1.1-ALPHA"
 _active_root = None
 _active_hwnd = None
 _mutex_handle = None
