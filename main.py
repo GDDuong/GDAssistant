@@ -317,6 +317,7 @@ def load_app_config() -> dict[str, Any]:
         "voice_device": None,
         "wake_word_enabled": False,
         "wake_phrase": DEFAULT_WAKE_PHRASE,
+        "voice_orb_enabled": True,
         "personality": DEFAULT_PERSONALITY
     }
     if CONFIG_PATH.exists():
@@ -334,6 +335,54 @@ def save_app_config(config_data: dict[str, Any]) -> None:
     current.update(config_data)
     with CONFIG_PATH.open("w", encoding="utf-8") as f:
         json.dump(current, f, indent=4)
+
+
+_orb_service = None
+_orb_lock = threading.Lock()
+_orb_expanded = False
+
+
+def _orb_raise_main_window(root) -> None:
+    """Clicking a truncated answer pill expands into the main window."""
+    def raise_it():
+        try:
+            root.deiconify()
+            root.lift()
+            root.focus_force()
+        except Exception:
+            pass
+    root.after(0, raise_it)
+
+
+def wire_orb_expand(orb, root) -> None:
+    """Connect the pill's expandRequested exactly once (per voice turn)."""
+    global _orb_expanded
+    if orb is None or _orb_expanded:
+        return
+    _orb_expanded = True
+    try:
+        orb.on_expand(lambda: _orb_raise_main_window(root))
+    except Exception:
+        pass
+
+
+def get_orb_service(debug_flag: bool = False):
+    """Lazily start the Qt orb service (voice pop-up). Returns None if the
+    setting is off or Qt is unavailable — the Tk app must never break because
+    of the overlay (incremental-migration rule)."""
+    global _orb_service
+    if not load_app_config().get("voice_orb_enabled", True):
+        return None
+    with _orb_lock:
+        if _orb_service is None:
+            try:
+                from ui_qt.service import OrbService
+
+                _orb_service = OrbService()
+            except Exception as error:
+                debug_log(f"[ORB] unavailable: {error}")
+                return None
+        return _orb_service
 
 
 def get_code_model(config: dict[str, Any], chat_model: str) -> str:
@@ -1050,6 +1099,20 @@ def launch_chat_ui(
         wake_entry.insert(0, app_cfg.get("wake_phrase", DEFAULT_WAKE_PHRASE))
         wake_entry.pack(anchor="w", pady=(3, 10))
 
+        orb_var = tk.BooleanVar(value=bool(app_cfg.get("voice_orb_enabled", True)))
+        tk.Checkbutton(
+            settings_win,
+            text=get_text("voice_orb_label", lang),
+            variable=orb_var,
+            bg=colors["background"],
+            fg=colors["foreground"],
+            activebackground=colors["background"],
+            activeforeground=colors["foreground"],
+            selectcolor=colors["input"],
+            justify=tk.LEFT,
+            wraplength=450,
+        ).pack(anchor="w", pady=(0, 8))
+
         tk.Label(settings_win, text=get_text("personality_label", lang), font=("Arial", 9, "bold"), **label_options).pack(anchor="w")
         pers_text = tk.Text(settings_win, height=4, width=45, **entry_options)
         pers_text.insert("1.0", app_cfg.get("personality", ""))
@@ -1098,6 +1161,7 @@ def launch_chat_ui(
                 "voice_device": new_voice_device,
                 "wake_word_enabled": wake_var.get(),
                 "wake_phrase": wake_entry.get().strip() or DEFAULT_WAKE_PHRASE,
+                "voice_orb_enabled": orb_var.get(),
                 "personality": pers_text.get("1.0", tk.END).strip(),
                 "language": lang_var.get()
             })
@@ -1499,6 +1563,8 @@ def launch_chat_ui(
         nonlocal voice_app
         request_session = session
         request_conv = current_conv
+        orb = get_orb_service()
+        wire_orb_expand(orb, root)
         try:
             if wake_listener is not None:
                 wake_listener.pause()
@@ -1509,22 +1575,36 @@ def launch_chat_ui(
                 voice_app = get_voice_assistant(debug=DEBUG_CONSOLE, device=load_app_config().get("voice_device"))
 
             root.after(0, lambda: [status.set(get_text("status_listening", lang)), mic_button.configure(text=get_text("status_listening", lang))])
-            user_text = voice_app.listen_dynamic()
+            if orb is not None:
+                orb.show_state("listening")
+            user_text = voice_app.listen_dynamic(
+                on_level=(orb.set_level if orb is not None else None)
+            )
             if not user_text:
                 def finish_empty():
                     add_message("GD", get_text("voice_no_speech", lang))
                     status.set(get_text("status_ready", lang))
                     mic_button.configure(text=get_text("btn_voice", lang))
                     set_inputs_enabled(True)
+                if orb is not None:
+                    orb.hide()
                 root.after(0, finish_empty)
                 return
 
+            if orb is not None:
+                orb.show_state("thinking")
             root.after(0, lambda: [add_message("You (Voice)", user_text), persist_chat_message(request_conv, "user", user_text), status.set(get_text("status_thinking", lang)), mic_button.configure(text=get_text("status_thinking", lang))])
             reply = strip_markdown(request_session.ask(f"[VOICE] {user_text}"))
 
+            if orb is not None:
+                orb.show_state("result", reply)
             root.after(0, lambda: [add_message("GD", reply), persist_chat_message(request_conv, "assistant", reply), status.set(get_text("status_speaking", lang)), mic_button.configure(text=get_text("status_speaking", lang))])
             voice_app.speak(reply)
+            if orb is not None:
+                orb.hide_after_turn()
         except Exception as error:
+            if orb is not None:
+                orb.hide()
             root.after(0, lambda: add_message("GD", get_text("voice_request_failed", lang).format(error=friendly_error(error))))
         finally:
             def restore_ui():
