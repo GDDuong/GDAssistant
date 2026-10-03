@@ -19,6 +19,7 @@ import time
 from gd_core.attachments import display_summary, load_binary_parts, prepare_message
 from gd_core.conversations import ConversationStore
 from gd_core.translations import get_text
+from ui_tk.attach_strip import AttachStrip
 from ui_tk.mdrender import configure_tags, insert_markdown, strip_markdown
 from ui_tk.sidebar import ConversationSidebar
 from ui_tk.themes import get_theme
@@ -45,7 +46,7 @@ from gd_core.local_tools import (
 )
 
 APP_NAME = "GD Assistant"
-APP_VERSION = "v0.5.1-BETA"
+APP_VERSION = "v0.5.2-BETA"
 _active_root = None
 _active_hwnd = None
 _mutex_handle = None
@@ -53,6 +54,8 @@ _mutex_handle = None
 DEFAULT_MODEL = "gemini-3.5-flash-lite"
 DEFAULT_CODE_MODEL = "gemini-3.5-flash-lite"
 DEFAULT_HOTKEY = "ctrl+alt+g"
+DEFAULT_VOICE_HOTKEY = "ctrl+alt+v"
+DEFAULT_CODE_HOTKEY = "ctrl+alt+c"
 DEFAULT_WAKE_PHRASE = "hey assistant"
 DEFAULT_LANGUAGE = "en"
 DEFAULT_PERSONALITY = ""
@@ -314,6 +317,8 @@ def load_app_config() -> dict[str, Any]:
         "share_chat_code_model": True,
         "theme": DEFAULT_THEME,
         "hotkey": DEFAULT_HOTKEY,
+        "hotkey_voice": DEFAULT_VOICE_HOTKEY,
+        "hotkey_code": DEFAULT_CODE_HOTKEY,
         "language": DEFAULT_LANGUAGE,
         "voice_device": None,
         "wake_word_enabled": False,
@@ -335,6 +340,43 @@ def save_app_config(config_data: dict[str, Any]) -> None:
     current.update(config_data)
     with CONFIG_PATH.open("w", encoding="utf-8") as f:
         json.dump(current, f, indent=4)
+
+
+_hotkey_registry: dict[str, dict[str, Any]] = {}
+
+def register_hotkey(action: str, keys: str, callback) -> bool:
+    """Bind (or rebind) a global shortcut for a named action."""
+    unregister_hotkey(action)
+    try:
+        import keyboard
+        handle = keyboard.add_hotkey(keys, callback)
+    except Exception as error:
+        log_debug(f"[HOTKEY] Failed to register '{keys}' for '{action}': {error}")
+        return False
+    _hotkey_registry[action] = {"keys": keys, "handle": handle, "callback": callback}
+    log_debug(f"[HOTKEY] Registered '{keys}' for '{action}'")
+    return True
+
+def unregister_hotkey(action: str) -> None:
+    entry = _hotkey_registry.pop(action, None)
+    if entry is None:
+        return
+    log_debug(f"[HOTKEY] Unregistered '{entry['keys']}' from '{action}'")
+    try:
+        import keyboard
+        keyboard.remove_hotkey(entry["handle"])
+    except Exception:
+        pass
+
+def update_hotkey(action: str, keys: str) -> bool:
+    """Re-point an already-bound action at a new key combination."""
+    entry = _hotkey_registry.get(action)
+    if entry is None:
+        return True
+    if entry["keys"] == keys:
+        return True
+    log_debug(f"[HOTKEY] Rebinding '{action}': '{entry['keys']}' -> '{keys}'")
+    return register_hotkey(action, keys, entry["callback"])
 
 
 def get_code_model(config: dict[str, Any], chat_model: str) -> str:
@@ -938,10 +980,12 @@ def launch_chat_ui(
     apply_menu_theme(colors)
 
     def open_settings_dialog():
+        log_debug("[SETTINGS] Dialog opened")
         settings_win = tk.Toplevel(root)
         settings_win.title(get_text("settings_title", lang))
         settings_win.resizable(False, False)
-        settings_win.configure(padx=20, pady=20, bg=colors["background"])
+        settings_win.geometry("700x440")
+        settings_win.configure(bg=colors["background"])
         settings_win.transient(root)
         settings_win.grab_set()
 
@@ -952,56 +996,129 @@ def launch_chat_ui(
             "insertbackground": colors["foreground"],
             "highlightbackground": colors["border"],
             "highlightcolor": colors["accent"],
+            "disabledbackground": colors["input"],
+            "disabledforeground": colors["muted"],
+        }
+        check_options = {
+            "bg": colors["background"],
+            "fg": colors["foreground"],
+            "activebackground": colors["background"],
+            "activeforeground": colors["foreground"],
+            "selectcolor": colors["input"],
+            "justify": tk.LEFT,
+            "wraplength": 400,
+        }
+        radio_options = {
+            "bg": colors["background"],
+            "fg": colors["foreground"],
+            "activebackground": colors["background"],
+            "activeforeground": colors["foreground"],
+            "selectcolor": colors["input"],
         }
         apply_ttk_theme(colors)
 
-        tk.Label(settings_win, text=get_text("settings_title", lang), font=("Arial", 14, "bold"), **label_options).pack(anchor="w", pady=(0, 10))
         current_key = get_api_key()
         app_cfg = load_app_config()
 
-        tk.Label(settings_win, text=get_text("api_key_label", lang), font=("Arial", 9, "bold"), **label_options).pack(anchor="w")
-        key_entry = tk.Entry(settings_win, width=60, show="*", **entry_options)
-        key_entry.insert(0, current_key)
-        key_entry.pack(anchor="w", pady=(3, 10))
+        # Categories live on the left rail; every page is built once and
+        # swapped in place, so the window keeps a stable size while switching.
+        body = tk.Frame(settings_win, bg=colors["background"])
+        body.pack(fill=tk.BOTH, expand=True, padx=16, pady=(16, 6))
 
-        tk.Label(settings_win, text=get_text("chat_model_label", lang), font=("Arial", 9, "bold"), **label_options).pack(anchor="w")
+        rail = tk.Frame(body, bg=colors["panel"], width=168, padx=8, pady=10)
+        rail.pack(side=tk.LEFT, fill=tk.Y)
+        rail.pack_propagate(False)
+
+        tk.Label(
+            rail,
+            text=get_text("menu_settings", lang),
+            font=("Arial", 16, "bold"),
+            bg=colors["panel"],
+            fg=colors["foreground"],
+            anchor="w",
+            padx=12,
+        ).pack(fill=tk.X, pady=(2, 12))
+
+        content = tk.Frame(body, bg=colors["background"])
+        content.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(16, 0))
+
+        categories = (
+            ("technical", get_text("settings_tab_technical", lang)),
+            ("shortcuts", get_text("settings_tab_shortcuts", lang)),
+            ("voice", get_text("settings_tab_voice", lang)),
+            ("appearance", get_text("settings_tab_appearance", lang)),
+            ("personality", get_text("settings_tab_personality", lang)),
+        )
+        pages: dict[str, tk.Frame] = {name: tk.Frame(content, bg=colors["background"]) for name, _ in categories}
+        rail_items: dict[str, tk.Label] = {}
+
+        def show_category(name: str) -> None:
+            for page in pages.values():
+                page.pack_forget()
+            pages[name].pack(fill=tk.BOTH, expand=True)
+            for item_name, item in rail_items.items():
+                selected = item_name == name
+                item.configure(
+                    bg=colors["accent"] if selected else colors["panel"],
+                    fg="#ffffff" if selected else colors["foreground"],
+                )
+
+        for name, title in categories:
+            item = tk.Label(
+                rail,
+                text=title,
+                font=("Arial", 10, "bold"),
+                bg=colors["panel"],
+                fg=colors["foreground"],
+                anchor="w",
+                padx=12,
+                pady=7,
+            )
+            item.pack(fill=tk.X, pady=1)
+            item.bind("<Button-1>", lambda _event, key=name: show_category(key))
+            rail_items[name] = item
+
+        def section_label(parent: tk.Frame, text: str) -> None:
+            tk.Label(parent, text=text, font=("Arial", 9, "bold"), **label_options).pack(anchor="w")
+
+        # --- Technical ---------------------------------------------------
+        technical = pages["technical"]
+        section_label(technical, get_text("api_key_label", lang))
+        key_entry = tk.Entry(technical, width=50, show="*", **entry_options)
+        key_entry.insert(0, current_key)
+        key_entry.pack(anchor="w", pady=(3, 12))
+
+        section_label(technical, get_text("chat_model_label", lang))
         model_entry = ttk.Combobox(
-            settings_win,
-            width=57,
+            technical,
+            width=47,
             values=COMMON_GEMINI_MODELS,
             state="normal",
             style="GDAssistant.TCombobox",
         )
         model_entry.set(app_cfg.get("model", DEFAULT_MODEL))
-        model_entry.pack(anchor="w", pady=(3, 10))
+        model_entry.pack(anchor="w", pady=(3, 12))
 
         share_models_var = tk.BooleanVar(value=app_cfg.get("share_chat_code_model", True))
         code_model_var = tk.StringVar(value=app_cfg.get("code_model", DEFAULT_CODE_MODEL))
-
         share_models_check = tk.Checkbutton(
-            settings_win,
+            technical,
             text=get_text("share_models_label", lang),
             variable=share_models_var,
-            bg=colors["background"],
-            fg=colors["foreground"],
-            activebackground=colors["background"],
-            activeforeground=colors["foreground"],
-            selectcolor=colors["input"],
-            justify=tk.LEFT,
-            wraplength=450,
+            **check_options,
         )
-        share_models_check.pack(anchor="w", pady=(0, 6))
+        share_models_check.pack(anchor="w", pady=(0, 8))
 
-        tk.Label(settings_win, text=get_text("code_model_label", lang), font=("Arial", 9, "bold"), **label_options).pack(anchor="w")
+        section_label(technical, get_text("code_model_label", lang))
         code_model_entry = ttk.Combobox(
-            settings_win,
-            width=57,
+            technical,
+            width=47,
             textvariable=code_model_var,
             values=COMMON_GEMINI_MODELS,
             state="normal",
             style="GDAssistant.TCombobox",
         )
-        code_model_entry.pack(anchor="w", pady=(3, 10))
+        code_model_entry.pack(anchor="w", pady=(3, 12))
 
         def update_code_model_state() -> None:
             code_model_entry.configure(state=tk.DISABLED if share_models_var.get() else tk.NORMAL)
@@ -1009,19 +1126,41 @@ def launch_chat_ui(
         share_models_check.configure(command=update_code_model_state)
         update_code_model_state()
 
-        tk.Label(settings_win, text=get_text("hotkey_label", lang), font=("Arial", 9, "bold"), **label_options).pack(anchor="w")
-        hotkey_entry = tk.Entry(settings_win, width=60, **entry_options)
-        hotkey_entry.insert(0, app_cfg.get("hotkey", DEFAULT_HOTKEY))
-        hotkey_entry.pack(anchor="w", pady=(3, 10))
+        # --- Shortcuts -----------------------------------------------------
+        shortcuts = pages["shortcuts"]
+        hotkey_specs = (
+            ("open", "hotkey_label", DEFAULT_HOTKEY),
+            ("voice", "hotkey_voice_label", DEFAULT_VOICE_HOTKEY),
+            ("code", "hotkey_code_label", DEFAULT_CODE_HOTKEY),
+        )
+        hotkey_fields: dict[str, tk.Entry] = {}
+        for action, label_key, default_value in hotkey_specs:
+            section_label(shortcuts, get_text(label_key, lang))
+            field = tk.Entry(shortcuts, width=50, **entry_options)
+            field.insert(0, app_cfg.get("hotkey" if action == "open" else f"hotkey_{action}", default_value))
+            field.pack(anchor="w", pady=(3, 10))
+            hotkey_fields[action] = field
+        tk.Label(
+            shortcuts,
+            text=get_text("hotkey_hint", lang),
+            font=("Arial", 9, "italic"),
+            bg=colors["background"],
+            fg=colors["muted"],
+            justify=tk.LEFT,
+            anchor="w",
+            wraplength=440,
+        ).pack(anchor="w", pady=(4, 0))
 
+        # --- Voice ---------------------------------------------------------
         from gd_core.voice import get_input_devices
 
-        tk.Label(settings_win, text=get_text("settings_mic_label", lang), font=("Arial", 9, "bold"), **label_options).pack(anchor="w")
+        voice = pages["voice"]
+        section_label(voice, get_text("settings_mic_label", lang))
         mic_devices = get_input_devices()
         mic_values = [get_text("mic_default_option", lang)] + [name for _, name in mic_devices]
         mic_entry = ttk.Combobox(
-            settings_win,
-            width=57,
+            voice,
+            width=47,
             values=mic_values,
             state="readonly",
             style="GDAssistant.TCombobox",
@@ -1032,55 +1171,60 @@ def launch_chat_ui(
                 mic_position = position
                 break
         mic_entry.current(mic_position)
-        mic_entry.pack(anchor="w", pady=(3, 10))
+        mic_entry.pack(anchor="w", pady=(3, 12))
 
         wake_var = tk.BooleanVar(value=bool(app_cfg.get("wake_word_enabled", False)))
-        tk.Checkbutton(
-            settings_win,
+        wake_check = tk.Checkbutton(
+            voice,
             text=get_text("wake_enable_label", lang),
             variable=wake_var,
-            bg=colors["background"],
-            fg=colors["foreground"],
-            activebackground=colors["background"],
-            activeforeground=colors["foreground"],
-            selectcolor=colors["input"],
-            justify=tk.LEFT,
-            wraplength=450,
-        ).pack(anchor="w", pady=(0, 2))
+            **check_options,
+        )
+        wake_check.pack(anchor="w", pady=(0, 8))
 
-        tk.Label(settings_win, text=get_text("wake_phrase_label", lang), font=("Arial", 9, "bold"), **label_options).pack(anchor="w")
-        wake_entry = tk.Entry(settings_win, width=60, **entry_options)
+        section_label(voice, get_text("wake_phrase_label", lang))
+        wake_entry = tk.Entry(voice, width=50, **entry_options)
         wake_entry.insert(0, app_cfg.get("wake_phrase", DEFAULT_WAKE_PHRASE))
         wake_entry.pack(anchor="w", pady=(3, 10))
 
-        tk.Label(settings_win, text=get_text("personality_label", lang), font=("Arial", 9, "bold"), **label_options).pack(anchor="w")
-        pers_text = tk.Text(settings_win, height=4, width=45, **entry_options)
-        pers_text.insert("1.0", app_cfg.get("personality", ""))
-        pers_text.pack(anchor="w", pady=(3, 10))
+        # The summoning sentence only means something while the listener runs.
+        def update_wake_inputs_state() -> None:
+            wake_entry.configure(state=tk.NORMAL if wake_var.get() else tk.DISABLED)
 
+        wake_check.configure(command=update_wake_inputs_state)
+        update_wake_inputs_state()
+
+        # --- Appearance ------------------------------------------------------
+        appearance = pages["appearance"]
         lang_var = tk.StringVar(value=app_cfg.get("language", "en"))
         theme_var = tk.StringVar(value=app_cfg.get("theme", DEFAULT_THEME))
-        radio_options = {
-            "bg": colors["background"],
-            "fg": colors["foreground"],
-            "activebackground": colors["background"],
-            "activeforeground": colors["foreground"],
-            "selectcolor": colors["input"],
-        }
-        preference_row = tk.Frame(settings_win, bg=colors["background"])
-        preference_row.pack(fill=tk.X, pady=(0, 8))
 
-        language_group = tk.Frame(preference_row, bg=colors["background"])
-        language_group.pack(side=tk.LEFT, anchor="n", padx=(0, 55))
-        tk.Label(language_group, text=get_text("language_label", lang), font=("Arial", 9, "bold"), **label_options).pack(anchor="w")
-        tk.Radiobutton(language_group, text="English", variable=lang_var, value="en", **radio_options).pack(anchor="w")
-        tk.Radiobutton(language_group, text="Tiếng Việt", variable=lang_var, value="vi", **radio_options).pack(anchor="w")
+        section_label(appearance, get_text("appearance_label", lang))
+        tk.Radiobutton(appearance, text=get_text("appearance_dark", lang), variable=theme_var, value="dark", **radio_options).pack(anchor="w")
+        tk.Radiobutton(appearance, text=get_text("appearance_light", lang), variable=theme_var, value="light", **radio_options).pack(anchor="w", pady=(0, 12))
 
-        appearance_group = tk.Frame(preference_row, bg=colors["background"])
-        appearance_group.pack(side=tk.LEFT, anchor="n")
-        tk.Label(appearance_group, text=get_text("appearance_label", lang), font=("Arial", 9, "bold"), **label_options).pack(anchor="w")
-        tk.Radiobutton(appearance_group, text=get_text("appearance_dark", lang), variable=theme_var, value="dark", **radio_options).pack(anchor="w")
-        tk.Radiobutton(appearance_group, text=get_text("appearance_light", lang), variable=theme_var, value="light", **radio_options).pack(anchor="w")
+        section_label(appearance, get_text("language_label", lang))
+        tk.Radiobutton(appearance, text="English", variable=lang_var, value="en", **radio_options).pack(anchor="w")
+        tk.Radiobutton(appearance, text="Tiếng Việt", variable=lang_var, value="vi", **radio_options).pack(anchor="w")
+
+        # --- Personality -------------------------------------------------------
+        personality_page = pages["personality"]
+        section_label(personality_page, get_text("personality_label", lang))
+        pers_text = tk.Text(
+            personality_page,
+            height=8,
+            width=50,
+            bg=colors["input"],
+            fg=colors["foreground"],
+            insertbackground=colors["foreground"],
+            highlightbackground=colors["border"],
+            highlightcolor=colors["accent"],
+        )
+        pers_text.insert("1.0", app_cfg.get("personality", ""))
+        pers_text.pack(anchor="w", pady=(3, 0))
+
+        footer = tk.Frame(settings_win, bg=colors["background"])
+        footer.pack(fill=tk.X, padx=16, pady=(6, 14))
 
         def save_settings():
             nonlocal model, session, code_panel, theme, personality
@@ -1088,6 +1232,20 @@ def launch_chat_ui(
             if not new_key:
                 messagebox.showerror("Error", get_text("err_empty_key", lang), parent=settings_win)
                 return
+            new_hotkeys = {
+                action: hotkey_fields[action].get().strip() or default_value
+                for action, _label_key, default_value in hotkey_specs
+            }
+            failed_actions = [
+                action for action, keys in new_hotkeys.items()
+                if not update_hotkey(action, keys)
+            ]
+            log_debug(
+                "[SETTINGS] Saved. Hotkeys: "
+                + ", ".join(f"{action}={keys}" for action, keys in new_hotkeys.items())
+            )
+            if failed_actions:
+                log_debug(f"[SETTINGS] Hotkey registration failed for: {', '.join(failed_actions)}")
             save_api_key(new_key)
             new_chat_model = model_entry.get().strip() or DEFAULT_MODEL
             mic_choice = mic_entry.current()
@@ -1097,12 +1255,14 @@ def launch_chat_ui(
                 "code_model": code_model_var.get().strip() or DEFAULT_CODE_MODEL,
                 "share_chat_code_model": share_models_var.get(),
                 "theme": theme_var.get(),
-                "hotkey": hotkey_entry.get().strip() or DEFAULT_HOTKEY,
+                "hotkey": new_hotkeys["open"],
+                "hotkey_voice": new_hotkeys["voice"],
+                "hotkey_code": new_hotkeys["code"],
                 "voice_device": new_voice_device,
                 "wake_word_enabled": wake_var.get(),
                 "wake_phrase": wake_entry.get().strip() or DEFAULT_WAKE_PHRASE,
                 "personality": pers_text.get("1.0", tk.END).strip(),
-                "language": lang_var.get()
+                "language": lang_var.get(),
             })
             from gd_core.voice import set_voice_input_device
 
@@ -1124,19 +1284,38 @@ def launch_chat_ui(
                 code_panel = None
             if code_was_visible:
                 switch_to_code()
-            messagebox.showinfo(get_text("settings_success_title", lang), get_text("settings_saved_msg", lang), parent=settings_win)
+            if failed_actions:
+                messagebox.showwarning(
+                    get_text("settings_success_title", lang),
+                    get_text("settings_hotkey_failed_msg", lang),
+                    parent=settings_win,
+                )
+            else:
+                messagebox.showinfo(get_text("settings_success_title", lang), get_text("settings_saved_msg", lang), parent=settings_win)
             settings_win.destroy()
 
         tk.Button(
-            settings_win,
+            footer,
+            text=get_text("btn_close", lang),
+            command=settings_win.destroy,
+            bg=colors["button"],
+            fg=colors["foreground"],
+            activebackground=colors["button_active"],
+            activeforeground=colors["foreground"],
+            width=12,
+        ).pack(side=tk.RIGHT)
+        tk.Button(
+            footer,
             text=get_text("btn_save", lang),
             command=save_settings,
             bg=colors["accent"],
             fg="#ffffff",
             activebackground=colors["accent_active"],
             activeforeground="#ffffff",
-            width=20,
-        ).pack(anchor="e", pady=10)
+            width=16,
+        ).pack(side=tk.RIGHT, padx=(0, 8))
+
+        show_category("technical")
 
     file_menu.add_command(label=get_text("menu_settings", lang), command=open_settings_dialog)
     file_menu.add_separator()
@@ -1313,27 +1492,13 @@ def launch_chat_ui(
     )
     mic_button.grid(row=1, column=3, sticky="e", padx=(6, 0), pady=(12, 0))
 
-    attach_row = tk.Frame(chat_frame, bg=colors["background"])
-    attach_label = tk.Label(
-        attach_row,
-        anchor="w",
-        bg=colors["background"],
-        fg=colors["muted"],
-        font=("Segoe UI", 8),
+    attach_strip = AttachStrip(
+        chat_frame,
+        colors,
+        clear_text=get_text("attach_clear", lang),
+        on_remove=lambda index: remove_attachment(index),
+        on_clear=lambda: clear_attachments(),
     )
-    attach_label.pack(side=tk.LEFT)
-    attach_clear_button = tk.Button(
-        attach_row,
-        text=get_text("attach_clear", lang),
-        command=lambda: clear_attachments(),
-        relief=tk.FLAT,
-        bg=colors["background"],
-        fg=colors["muted"],
-        activebackground=colors["button_active"],
-        activeforeground=colors["foreground"],
-        font=("Segoe UI", 8),
-    )
-    attach_clear_button.pack(side=tk.LEFT, padx=(6, 0))
 
     status = tk.StringVar(value=get_text("status_ready", lang))
     status_label = tk.Label(
@@ -1350,10 +1515,15 @@ def launch_chat_ui(
 
     def refresh_attachments() -> None:
         if pending_files:
-            attach_label.configure(text=display_summary(pending_files))
-            attach_row.grid(row=2, column=0, columnspan=4, sticky="w", pady=(4, 0))
+            attach_strip.refresh(pending_files)
+            attach_strip.grid(row=2, column=0, columnspan=4, sticky="w", pady=(4, 0))
         else:
-            attach_row.grid_remove()
+            attach_strip.grid_remove()
+
+    def remove_attachment(index: int) -> None:
+        if 0 <= index < len(pending_files):
+            pending_files.pop(index)
+        refresh_attachments()
 
     def clear_attachments() -> None:
         pending_files.clear()
@@ -1361,6 +1531,8 @@ def launch_chat_ui(
 
     def open_attach_dialog() -> None:
         chosen = filedialog.askopenfilenames(parent=root, title=get_text("attach_files_title", lang))
+        if chosen:
+            log_debug(f"[ATTACH] Queued {len(chosen)} file(s) for the next message")
         for item in chosen:
             path = Path(item)
             if path not in pending_files:
@@ -1491,14 +1663,7 @@ def launch_chat_ui(
             activebackground=colors["button_active"],
             activeforeground=colors["foreground"],
         )
-        attach_row.configure(bg=colors["background"])
-        attach_label.configure(bg=colors["background"], fg=colors["muted"])
-        attach_clear_button.configure(
-            bg=colors["background"],
-            fg=colors["muted"],
-            activebackground=colors["button_active"],
-            activeforeground=colors["foreground"],
-        )
+        attach_strip.update_palette(colors)
         status_label.configure(bg=colors["background"], fg=colors["foreground"])
         configure_tags(transcript, colors)
         chat_sidebar.update_palette(colors)
@@ -1521,7 +1686,7 @@ def launch_chat_ui(
             root.after(0, schedule_stream_render)
 
         try:
-            extra_parts = load_binary_parts(binary_paths) if binary_paths else None
+            extra_parts = load_binary_parts(binary_paths, debug=DEBUG_CONSOLE) if binary_paths else None
             reply = request_session.ask_stream(message, on_chunk, stop_event, extra_parts=extra_parts)
         except Exception as error:
             request_failed = True
@@ -1565,7 +1730,7 @@ def launch_chat_ui(
             add_message("You", f"{message}\n{summary}" if message else summary)
         else:
             add_message("You", message)
-        request_text, binary_paths = prepare_message(message, files)
+        request_text, binary_paths = prepare_message(message, files, debug=DEBUG_CONSOLE)
         persist_chat_message(current_conv, "user", request_text)
         stream_pieces.clear()
         stop_event = threading.Event()
@@ -1652,7 +1817,9 @@ def launch_chat_ui(
             wake_listener = None
         wake_cfg = load_app_config()
         if not wake_cfg.get("wake_word_enabled"):
+            log_debug("[WAKE] Wake word disabled in settings")
             return
+        log_debug(f"[WAKE] Starting wake listener with phrase '{wake_cfg.get('wake_phrase') or DEFAULT_WAKE_PHRASE}'")
         from gd_core.wakeword import WakeWordListener
 
         wake_listener = WakeWordListener(
@@ -1698,6 +1865,28 @@ def launch_chat_ui(
             code_panel.load_conversation(conversation_id)
         code_panel.pack(fill=tk.BOTH, expand=True)
         root.title(f"{APP_NAME} {APP_VERSION} — {get_text('mode_code', lang)}")
+
+    # Voice and Code shortcuts only mean something while this window exists,
+    # so they join the global "open" hotkey here rather than in main().
+    def hotkey_voice_action() -> None:
+        log_debug("[HOTKEY] Voice hotkey fired")
+        # keyboard delivers callbacks on its own hook thread.
+        root.after(0, handle_wake)
+
+    def hotkey_code_action() -> None:
+        def toggle() -> None:
+            root.deiconify()
+            if code_panel is not None and code_panel.winfo_manager():
+                log_debug("[HOTKEY] Code hotkey -> switching to Chat")
+                switch_to_chat()
+            else:
+                log_debug("[HOTKEY] Code hotkey -> switching to Code")
+                switch_to_code()
+        root.after(0, toggle)
+
+    ui_cfg = load_app_config()
+    register_hotkey("voice", ui_cfg.get("hotkey_voice", DEFAULT_VOICE_HOTKEY), hotkey_voice_action)
+    register_hotkey("code", ui_cfg.get("hotkey_code", DEFAULT_CODE_HOTKEY), hotkey_code_action)
 
     def open_terminal_code() -> None:
         """Close this instance before its terminal Code mode begins."""
@@ -1889,6 +2078,7 @@ def main() -> int:
         voice_app.run_voice_loop(AssistantSession(client, model, personality))
     else:
         def open_gui_safely():
+            log_debug("[HOTKEY] Open hotkey fired")
             global _active_root, _active_hwnd
             if _active_root is not None:
                 try:
@@ -1911,11 +2101,7 @@ def main() -> int:
         )
         threading.Thread(target=tray_daemon.run_tray, daemon=True).start()
 
-        try:
-            import keyboard
-            keyboard.add_hotkey(hotkey, open_gui_safely)
-        except Exception as e:
-            print(f"[NOTICE] Failed to register hotkey '{hotkey}': {e}")
+        register_hotkey("open", hotkey, open_gui_safely)
 
         launch_chat_ui(client, model, lang, personality, theme)
     return 0

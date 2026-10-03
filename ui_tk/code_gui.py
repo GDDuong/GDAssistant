@@ -10,6 +10,7 @@ import tkinter as tk
 from tkinter import scrolledtext, filedialog
 
 from gd_core.attachments import display_summary, load_binary_parts, prepare_message
+from ui_tk.attach_strip import AttachStrip
 from gd_core.coding_tools import set_workspace, get_workspace, set_extra_dirs
 from gd_core.code_agent import CodeAgentSession
 from gd_core.conversations import ConversationStore
@@ -165,17 +166,14 @@ class CodeAgentPanel(tk.Frame):
         )
         self.attach_btn.pack(side=tk.LEFT, padx=(0, 6))
 
-        # Clicking the pending-files note clears the queue before sending.
-        self.attach_label = tk.Label(
+        # Chip strip above the input row; each chip removes its own file.
+        self.attach_strip = AttachStrip(
             bottom_frame,
-            text="",
-            bg=color["panel"],
-            fg=color["muted"],
-            font=("Segoe UI", 8),
-            cursor="hand2",
+            {**color, "background": color["panel"]},
+            clear_text=self._text("attach_clear"),
+            on_remove=lambda index: self.remove_attachment(index),
+            on_clear=self.clear_attachments,
         )
-        self.attach_label.pack(side=tk.LEFT, padx=(0, 8))
-        self.attach_label.bind("<Button-1>", lambda _event: self.clear_attachments())
 
         self.input_box = tk.Text(
             bottom_frame,
@@ -458,22 +456,26 @@ class CodeAgentPanel(tk.Frame):
             path = Path(item)
             if path not in self.pending_files:
                 self.pending_files.append(path)
+        if chosen and self.debug:
+            print(f"[ATTACH] Queued {len(chosen)} file(s) for the next message")
         self._refresh_attachments()
 
     def clear_attachments(self) -> None:
         self.pending_files.clear()
         self._refresh_attachments()
 
+    def remove_attachment(self, index: int) -> None:
+        if 0 <= index < len(self.pending_files):
+            self.pending_files.pop(index)
+        self._refresh_attachments()
+
     def _refresh_attachments(self) -> None:
         if not self.pending_files:
-            self.attach_label.configure(text="")
+            self.attach_strip.pack_forget()
             return
-        names = ", ".join(path.name for path in self.pending_files)
-        if len(names) > 60:
-            names = names[:57] + "..."
-        self.attach_label.configure(
-            text=f"{self._text('attach_attached')} ({len(self.pending_files)}): {names}  [{self._text('attach_clear')}]"
-        )
+        self.attach_strip.refresh(self.pending_files)
+        if not self.attach_strip.winfo_manager():
+            self.attach_strip.pack(side=tk.TOP, fill=tk.X, pady=(0, 6), before=self.attach_btn)
 
     def submit_quick(self, prompt: str) -> None:
         if self.is_busy:
@@ -503,7 +505,7 @@ class CodeAgentPanel(tk.Frame):
         else:
             display = prompt
         self._append_message(self._text("code_you"), display, "user")
-        request_text, binary_paths = prepare_message(prompt, files)
+        request_text, binary_paths = prepare_message(prompt, files, debug=self.debug)
         self._persist_message("user", request_text)
 
         self.is_busy = True
@@ -531,7 +533,7 @@ class CodeAgentPanel(tk.Frame):
             nonlocal streamed
             had_error = False
             try:
-                extra_parts = load_binary_parts(binary_paths) if binary_paths else None
+                extra_parts = load_binary_parts(binary_paths, debug=self.debug) if binary_paths else None
                 response = self.session.execute_turn(
                     request_text, on_text=on_text, stop_event=self.stop_event, extra_parts=extra_parts
                 )

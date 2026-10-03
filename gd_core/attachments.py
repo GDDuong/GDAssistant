@@ -14,7 +14,12 @@ MAX_INLINE_CHARS = 50_000
 OFFICE_SUFFIXES = {".docx", ".xlsx", ".pptx"}
 
 
-def prepare_message(text: str, file_paths: list[Any]) -> tuple[str, list[Path]]:
+def _log(debug: bool, message: str) -> None:
+    if debug:
+        print(f"[ATTACH] {message}")
+
+
+def prepare_message(text: str, file_paths: list[Any], debug: bool = False) -> tuple[str, list[Path]]:
     """Build the model-facing message and list any non-text files.
 
     Readable text files (and Word/Excel/PowerPoint documents, whose text is
@@ -30,8 +35,10 @@ def prepare_message(text: str, file_paths: list[Any]) -> tuple[str, list[Path]]:
     for path in paths:
         content = _read_text_file(path)
         if content is not None:
+            _log(debug, f"Inlining text from '{path}' ({len(content)} chars)")
             sections.append(f"Attached file: {path}\n```\n{content}\n```")
         else:
+            _log(debug, f"Sending '{path}' as a binary attachment")
             binary_paths.append(path)
 
     if binary_paths:
@@ -50,7 +57,7 @@ def display_summary(file_paths: list[Any]) -> str:
     return f"[Attached: {names}]"
 
 
-def load_binary_parts(file_paths: list[Any]) -> list[Any]:
+def load_binary_parts(file_paths: list[Any], debug: bool = False) -> list[Any]:
     """Load non-text files as Gemini inline-data parts; unreadable files are skipped."""
     from google.genai import types
 
@@ -59,10 +66,13 @@ def load_binary_parts(file_paths: list[Any]) -> list[Any]:
         path = Path(path)
         try:
             data = path.read_bytes()
-        except OSError:
+        except OSError as error:
+            _log(debug, f"Skipped unreadable file '{path}': {error}")
             continue
         mime_type, _ = mimetypes.guess_type(str(path))
-        parts.append(types.Part.from_bytes(data=data, mime_type=mime_type or "application/octet-stream"))
+        mime_type = mime_type or "application/octet-stream"
+        _log(debug, f"Loaded '{path}' as {mime_type} ({len(data)} bytes)")
+        parts.append(types.Part.from_bytes(data=data, mime_type=mime_type))
     return parts
 
 
