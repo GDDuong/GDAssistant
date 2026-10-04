@@ -2,6 +2,15 @@
 
 All notable changes to GD Assistant are documented here.
 
+## v0.5.3-BETA
+
+### Highlights
+
+- **13 new local tools** — the assistant can now set timers, list and switch between open windows, write and read text files in your user folder, search the web and read the top result out for you, copy and paste clipboard text, control music playback and system volume, check battery level, and tell which window is currently focused.
+- **`--console` is now `--debug`** — the launch flag that shows live diagnostics was renamed so it can't be confused with `--terminal`; update any shortcuts that used the old name.
+
+---
+
 ## v0.5.2-BETA
 
 ### Highlights

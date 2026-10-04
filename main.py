@@ -43,10 +43,23 @@ from gd_core.local_tools import (
     press_key,
     scroll_screen,
     confirm_action,
+    set_timer,
+    cancel_timer,
+    list_windows,
+    focus_window,
+    minimize_all,
+    write_local_file,
+    read_local_file,
+    search_and_read_webpage,
+    get_clipboard,
+    set_clipboard,
+    media_control,
+    get_battery_status,
+    get_active_window,
 )
 
 APP_NAME = "GD Assistant"
-APP_VERSION = "v0.5.2-BETA"
+APP_VERSION = "v0.5.3-BETA"
 _active_root = None
 _active_hwnd = None
 _mutex_handle = None
@@ -77,7 +90,9 @@ def get_system_instruction(personality: str) -> str:
         "You may use your approved local tools when requested: open_app, close_app, "
         "get_system_stats, search_files, open_url, get_current_time, remember_info, "
         "forget_info, get_all_memory, open_file, take_screenshot, click_at, type_text, "
-        "press_key, and scroll_screen. "
+        "press_key, scroll_screen, set_timer, cancel_timer, list_windows, focus_window, "
+        "minimize_all, write_local_file, read_local_file, search_web, get_clipboard, "
+        "set_clipboard, media_control, get_battery_status, and get_active_window. "
         "Never claim to have performed a computer action unless the tool result confirms it. "
         "The local tool result is authoritative: if its status is SUCCESS, say the action succeeded; "
         "if FAILURE, report that it failed. "
@@ -244,6 +259,122 @@ TOOL_DECLARATIONS: list[dict[str, Any]] = [
             "required": ["amount"],
         },
     },
+    {
+        "name": "set_timer",
+        "description": "Starts a countdown timer that beeps and shows a popup when it finishes. Use for requests like 'set a timer for 10 minutes' or 'remind me in 30 seconds'.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "seconds": {"type": "number", "description": "Countdown length in seconds (1 to 86400)."},
+                "label": {"type": "string", "description": "Short name for the timer, e.g. 'tea' or 'meeting'."},
+            },
+            "required": ["seconds"],
+        },
+    },
+    {
+        "name": "cancel_timer",
+        "description": "Cancels a running timer by its label.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "label": {"type": "string", "description": "The timer label given when it was created."}
+            },
+            "required": ["label"],
+        },
+    },
+    {
+        "name": "list_windows",
+        "description": "Lists the titles of all open windows on the desktop.",
+        "parameters": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "focus_window",
+        "description": "Brings an open window to the front (restores it if minimized), matched by a snippet of its title.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "title_match": {"type": "string", "description": "Case-insensitive snippet of the window title, e.g. 'Notepad' or 'report.txt'."}
+            },
+            "required": ["title_match"],
+        },
+    },
+    {
+        "name": "minimize_all",
+        "description": "Minimizes every open window except GD Assistant itself (like pressing Show Desktop).",
+        "parameters": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "write_local_file",
+        "description": "Saves text to a file inside the user's home folder. Use for 'write this to a file', notes, or quick drafts.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "file_path": {"type": "string", "description": "Absolute path under the user's home directory."},
+                "content": {"type": "string", "description": "The text to write."},
+                "append": {"type": "boolean", "description": "True adds to the end of the file; default false replaces it."},
+            },
+            "required": ["file_path", "content"],
+        },
+    },
+    {
+        "name": "read_local_file",
+        "description": "Reads a text file inside the user's home folder and returns its contents. Use for 'what does my file say' requests.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "file_path": {"type": "string", "description": "Absolute path under the user's home directory."}
+            },
+            "required": ["file_path"],
+        },
+    },
+    {
+        "name": "search_web",
+        "description": "Searches the web for a query, opens the top result, and returns a text summary of that page.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "The search query, e.g. 'latest python release date'."}
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "get_clipboard",
+        "description": "Returns the current text content of the clipboard.",
+        "parameters": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "set_clipboard",
+        "description": "Copies text to the clipboard, replacing its current content. Use for 'copy this' requests.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string", "description": "The text to copy to the clipboard."}
+            },
+            "required": ["text"],
+        },
+    },
+    {
+        "name": "media_control",
+        "description": "Controls media playback and system volume: play_pause, next, previous, volume_up, volume_down, or mute.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "description": "One of: play_pause, next, previous, volume_up, volume_down, mute."}
+            },
+            "required": ["action"],
+        },
+    },
+    {
+        "name": "get_battery_status",
+        "description": "Reports battery percentage and charging state; says so clearly on desktops without a battery.",
+        "parameters": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "get_active_window",
+        "description": "Returns the title of the window that currently has focus.",
+        "parameters": {"type": "object", "properties": {}},
+    },
 ]
 
 TOOL_REGISTRY: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
@@ -276,6 +407,27 @@ TOOL_REGISTRY: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
         else {"status": "FAILURE", "message": "User blocked key action via security modal."}
     ),
     "scroll_screen": lambda args: scroll_screen(int(args.get("amount", 0))),
+    "set_timer": lambda args: set_timer(args.get("seconds"), str(args.get("label", ""))),
+    "cancel_timer": lambda args: cancel_timer(str(args.get("label", ""))),
+    "list_windows": lambda _args: list_windows(),
+    "focus_window": lambda args: focus_window(str(args.get("title_match", ""))),
+    "minimize_all": lambda _args: (
+        minimize_all()
+        if confirm_action("Minimize all open windows?")
+        else {"status": "FAILURE", "message": "User blocked this action via security modal."}
+    ),
+    "write_local_file": lambda args: write_local_file(
+        str(args.get("file_path", "")),
+        str(args.get("content", "")),
+        bool(args.get("append", False)),
+    ),
+    "read_local_file": lambda args: read_local_file(str(args.get("file_path", "")), debug=DEBUG_CONSOLE),
+    "search_web": lambda args: search_and_read_webpage(str(args.get("query", ""))),
+    "get_clipboard": lambda _args: get_clipboard(),
+    "set_clipboard": lambda args: set_clipboard(str(args.get("text", "")), debug=DEBUG_CONSOLE),
+    "media_control": lambda args: media_control(str(args.get("action", "")), debug=DEBUG_CONSOLE),
+    "get_battery_status": lambda _args: get_battery_status(),
+    "get_active_window": lambda _args: get_active_window(),
 }
 
 def get_audio_save_path() -> Path:
@@ -980,7 +1132,6 @@ def launch_chat_ui(
     apply_menu_theme(colors)
 
     def open_settings_dialog():
-        log_debug("[SETTINGS] Dialog opened")
         settings_win = tk.Toplevel(root)
         settings_win.title(get_text("settings_title", lang))
         settings_win.resizable(False, False)
@@ -1977,10 +2128,9 @@ def main() -> int:
 
     parser = argparse.ArgumentParser(description="GD Assistant")
     parser.add_argument(
-        "--console",
         "--debug",
         action="store_true",
-        dest="console",
+        dest="debug",
         help="show system and Coding Agent round/tool diagnostics in the launching console",
     )
     parser.add_argument("--terminal", action="store_true", help="use the original terminal-only chat interface")
@@ -1993,7 +2143,7 @@ def main() -> int:
     parser.add_argument("--model", type=str, default=None, help="override the Gemini model name")
     arguments = parser.parse_args()
 
-    DEBUG_CONSOLE = bool(arguments.console)
+    DEBUG_CONSOLE = bool(arguments.debug)
 
     if DEBUG_CONSOLE:
         print(f"\n===============================================================\n DEBUG CONSOLE MODE FOR {APP_NAME.upper()}\n {APP_VERSION}\n===============================================================\n", flush=True)

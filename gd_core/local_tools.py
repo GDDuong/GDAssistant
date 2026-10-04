@@ -9,17 +9,19 @@ SUCCESS, because the search ran correctly.
 
 from __future__ import annotations
 
-import time
+import ctypes
 import os
 import subprocess
+import threading
+import time
 import urllib.parse
 import webbrowser
+import winsound
+from ctypes import wintypes
 from datetime import datetime
 from pathlib import Path
 from typing import TypedDict
 import json
-import os
-from pathlib import Path
 from typing import Any
 from PIL import ImageGrab
 import pyautogui
@@ -597,3 +599,371 @@ def read_local_file(file_path: str) -> dict[str, str]:
         }
     except Exception as e:
         return {"status": "FAILURE", "message": f"Failed to read file: {e}"}
+
+
+# ---------------------------------------------------------------- timers ----
+
+MAX_TIMER_SECONDS = 24 * 60 * 60
+_active_timers: dict[str, threading.Timer] = {}
+
+
+def _format_duration(seconds: float) -> str:
+    seconds = int(round(seconds))
+    if seconds < 60:
+        return f"{seconds} second(s)"
+    minutes, rest = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{minutes} minute(s)" if not rest else f"{minutes} min {rest} s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours} hour(s) {minutes} min" if minutes else f"{hours} hour(s)"
+
+
+def set_timer(seconds: float, label: str = "") -> ToolResult:
+    """Start a countdown timer that alerts with a beep and a popup when done.
+
+    Args:
+        seconds: Countdown length, between 1 second and 24 hours.
+        label: Optional name for the timer, e.g. 'tea'.
+    """
+    try:
+        duration = float(seconds)
+    except (TypeError, ValueError):
+        return {"status": "FAILURE", "message": "Timer length must be a number of seconds."}
+    if not 1 <= duration <= MAX_TIMER_SECONDS:
+        return {"status": "FAILURE", "message": "Timers must be between 1 second and 24 hours."}
+
+    name = (label or "Timer").strip()[:80]
+
+    def ring() -> None:
+        _active_timers.pop(name, None)
+        try:
+            for _ in range(3):
+                winsound.Beep(1200, 350)
+                time.sleep(0.15)
+            ctypes.windll.user32.MessageBoxW(0, f"'{name}' is done.", "GD Assistant Timer", 0x40)
+        except Exception:
+            pass
+
+    timer = threading.Timer(duration, ring)
+    timer.daemon = True
+    timer.start()
+    _active_timers[name] = timer
+    return {
+        "status": "SUCCESS",
+        "message": f"Timer '{name}' set for {_format_duration(duration)}. I will alert you when it is done.",
+    }
+
+
+def cancel_timer(label: str) -> ToolResult:
+    """Stop a running timer by its label."""
+    name = (label or "").strip()[:80]
+    timer = _active_timers.pop(name, None)
+    if timer is None:
+        running = ", ".join(_active_timers) or "none"
+        return {"status": "FAILURE", "message": f"No running timer named '{name}'. Currently running: {running}."}
+    timer.cancel()
+    return {"status": "SUCCESS", "message": f"Timer '{name}' cancelled."}
+
+
+# --------------------------------------------------------------- windows ----
+
+_user32 = ctypes.windll.user32
+_SW_RESTORE = 9
+_SW_MINIMIZE = 6
+
+
+def _window_title(hwnd: int) -> str:
+    length = _user32.GetWindowTextLengthW(hwnd)
+    if not length:
+        return ""
+    buffer = ctypes.create_unicode_buffer(length + 1)
+    _user32.GetWindowTextW(hwnd, buffer, length + 1)
+    return buffer.value or ""
+
+
+def _is_visible_window(hwnd: int) -> bool:
+    return bool(_user32.IsWindowVisible(hwnd))
+
+
+def list_windows() -> ToolResult:
+    """List the titles of all open, visible top-level windows."""
+    titles: list[str] = []
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def collector(hwnd, _lparam):
+        if _is_visible_window(hwnd):
+            title = _window_title(hwnd)
+            if title and title != "Program Manager":
+                titles.append(title)
+        return True
+
+    try:
+        _user32.EnumWindows(collector, 0)
+    except OSError:
+        return {"status": "FAILURE", "message": "I couldn't read the window list right now."}
+
+    if not titles:
+        return {"status": "SUCCESS", "message": "No open windows found."}
+    listing = "\n".join(f"- {title}" for title in titles[:30])
+    extra = f"\n(+{len(titles) - 30} more)" if len(titles) > 30 else ""
+    return {"status": "SUCCESS", "message": f"{len(titles)} open window(s):\n{listing}{extra}"}
+
+
+def focus_window(title_match: str) -> ToolResult:
+    """Bring the first window whose title contains the given text to the front.
+
+    Args:
+        title_match: Case-insensitive snippet of the window title, e.g. 'Notepad'.
+    """
+    if not isinstance(title_match, str) or not title_match.strip():
+        return {"status": "FAILURE", "message": "A window title snippet is required."}
+    needle = title_match.strip().casefold()
+    found: list[int] = []
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def collector(hwnd, _lparam):
+        if _is_visible_window(hwnd) and needle in _window_title(hwnd).casefold():
+            found.append(hwnd)
+            return False
+        return True
+
+    _user32.EnumWindows(collector, 0)
+    if not found:
+        return {"status": "FAILURE", "message": f"No open window matches '{title_match.strip()}'."}
+
+    hwnd = found[0]
+    if _user32.IsIconic(hwnd):
+        _user32.ShowWindow(hwnd, _SW_RESTORE)
+    _user32.SetForegroundWindow(hwnd)
+    return {"status": "SUCCESS", "message": f"Brought '{_window_title(hwnd)}' to the front."}
+
+
+def minimize_all() -> ToolResult:
+    """Minimize every visible window except GD Assistant itself."""
+    my_pid = wintypes.DWORD()
+    minimized: list[str] = []
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def collector(hwnd, _lparam):
+        if not _is_visible_window(hwnd) or _user32.IsIconic(hwnd):
+            return True
+        title = _window_title(hwnd)
+        if not title or title == "Program Manager":
+            return True
+        _user32.GetWindowThreadProcessId(hwnd, ctypes.byref(my_pid))
+        if my_pid.value == os.getpid():
+            return True
+        _user32.ShowWindow(hwnd, _SW_MINIMIZE)
+        minimized.append(title)
+        return True
+
+    _user32.EnumWindows(collector, 0)
+    if not minimized:
+        return {"status": "SUCCESS", "message": "There was nothing to minimize."}
+    return {"status": "SUCCESS", "message": f"Minimized {len(minimized)} window(s): {', '.join(minimized[:10])}."}
+
+
+# ---------------------------------------------------------------- files -----
+
+MAX_WRITE_CHARS = 200_000
+
+
+def write_local_file(file_path: str, content: str, append: bool = False) -> ToolResult:
+    """Save text to a file inside the user's home folder (creates parents).
+
+    Args:
+        file_path: Absolute path under the user's home directory.
+        content: Text to write.
+        append: When true, adds to the end of the file instead of replacing it.
+    """
+    if not isinstance(file_path, str) or not file_path.strip():
+        return {"status": "FAILURE", "message": "File path cannot be empty."}
+    if not isinstance(content, str):
+        return {"status": "FAILURE", "message": "Content must be text."}
+    if len(content) > MAX_WRITE_CHARS:
+        return {"status": "FAILURE", "message": f"Content is too large to write safely (>{MAX_WRITE_CHARS} characters)."}
+
+    target = Path(os.path.abspath(file_path.strip().strip('"')))
+    home = Path.home().resolve()
+    if target != home and home not in target.parents:
+        return {
+            "status": "FAILURE",
+            "message": f"I can only save files inside your user folder ({home}), not '{target}'.",
+        }
+    if home / "AppData" in target.parents:
+        return {
+            "status": "FAILURE",
+            "message": "I can't write inside AppData — that folder holds application settings and secrets.",
+        }
+
+    existed = target.exists()
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        mode = "a" if (append and existed) else "w"
+        with target.open(mode, encoding="utf-8") as file:
+            file.write(content)
+    except OSError as error:
+        return {"status": "FAILURE", "message": f"Failed to write '{target}': {error}"}
+
+    verb = "Appended to" if mode == "a" else ("Overwrote" if existed else "Created")
+    return {"status": "SUCCESS", "message": f"{verb} '{target}' ({len(content)} characters)."}
+
+# ------------------------------------------- media, clipboard, quick info -----
+
+MAX_CLIPBOARD_CHARS = 10_000
+MAX_READ_CHARS = 100_000
+
+# Virtual-key codes for hardware media keys; validated against this map so the
+# model can only ever pick one of these fixed actions.
+_MEDIA_KEY_VK = {
+    "play_pause": 0xB3,
+    "next": 0xB0,
+    "previous": 0xB1,
+    "volume_up": 0xAF,
+    "volume_down": 0xAE,
+    "mute": 0xAD,
+}
+
+
+def _log(debug: bool, message: str) -> None:
+    """Print a debug line when the host app passes its debug flag down."""
+    if debug:
+        print(f"[TOOLS] {message}")
+
+
+def media_control(action: str, debug: bool = False) -> ToolResult:
+    """Send one hardware media key: play_pause, next, previous, volume_up, volume_down, or mute.
+
+    Args:
+        action: One of the fixed action names in _MEDIA_KEY_VK.
+    """
+    if not isinstance(action, str) or not action.strip():
+        return {"status": "FAILURE", "message": "An action name is required."}
+    vk = _MEDIA_KEY_VK.get(action.strip().lower())
+    if vk is None:
+        allowed = ", ".join(sorted(_MEDIA_KEY_VK))
+        return {"status": "FAILURE", "message": f"Unknown action '{action}'. Use one of: {allowed}."}
+    try:
+        _user32.keybd_event(vk, 0, 0, 0)
+        _user32.keybd_event(vk, 0, 2, 0)  # KEYEVENTF_KEYUP
+    except OSError as error:
+        return {"status": "FAILURE", "message": f"Couldn't send media command '{action}': {error}"}
+    _log(debug, f"media_control sent '{action.strip().lower()}'")
+    return {"status": "SUCCESS", "message": f"Sent media command '{action.strip().lower()}'."}
+
+
+def get_clipboard() -> ToolResult:
+    """Return the current clipboard text (empty message when it holds no text)."""
+    try:
+        text = pyperclip.paste()
+    except Exception:
+        return {"status": "FAILURE", "message": "I couldn't read the clipboard right now."}
+    if not text:
+        return {"status": "SUCCESS", "message": "The clipboard is empty (or holds non-text content)."}
+    clipped = ""
+    if len(text) > MAX_CLIPBOARD_CHARS:
+        clipped = "\n[...clipboard text truncated...]"
+        text = text[:MAX_CLIPBOARD_CHARS]
+    return {"status": "SUCCESS", "message": f"Clipboard text:\n{text}{clipped}"}
+
+
+def set_clipboard(text: str, debug: bool = False) -> ToolResult:
+    """Copy text onto the clipboard, replacing its current content."""
+    if not isinstance(text, str) or not text:
+        return {"status": "FAILURE", "message": "Text to copy cannot be empty."}
+    if len(text) > MAX_CLIPBOARD_CHARS:
+        return {
+            "status": "FAILURE",
+            "message": f"That text is too large to copy (>{MAX_CLIPBOARD_CHARS} characters).",
+        }
+    try:
+        pyperclip.copy(text)
+    except Exception:
+        return {"status": "FAILURE", "message": "I couldn't write to the clipboard."}
+    _log(debug, f"set_clipboard copied {len(text)} characters")
+    return {"status": "SUCCESS", "message": f"Copied {len(text)} characters to the clipboard."}
+
+
+def get_battery_status() -> ToolResult:
+    """Report battery percentage and charging state (desktops get a clear note)."""
+    try:
+        battery = psutil.sensors_battery()
+    except (OSError, psutil.Error):
+        battery = None
+    if battery is None:
+        return {
+            "status": "SUCCESS",
+            "message": "This PC doesn't have a battery (it's a desktop or a plugged-in workstation).",
+        }
+    percent = round(battery.percent)
+    if battery.power_plugged:
+        state = "plugged in and fully charged" if percent >= 99 else "plugged in and charging"
+    else:
+        state = "running on battery"
+    message = f"Battery is at {percent}% ({state})."
+    if (
+        not battery.power_plugged
+        and battery.secsleft not in (psutil.POWER_TIME_UNLIMITED, psutil.POWER_TIME_UNKNOWN)
+        and battery.secsleft > 0
+    ):
+        minutes = battery.secsleft // 60
+        message += f" Roughly {minutes // 60} h {minutes % 60} min of charge left."
+    return {"status": "SUCCESS", "message": message}
+
+
+def get_active_window() -> ToolResult:
+    """Return the title of the window that currently has focus."""
+    try:
+        hwnd = _user32.GetForegroundWindow()
+        title = _window_title(hwnd) if hwnd else ""
+    except OSError:
+        return {"status": "FAILURE", "message": "I couldn't read the active window."}
+    if not title:
+        return {"status": "SUCCESS", "message": "The active window has no title (likely the desktop)."}
+    return {"status": "SUCCESS", "message": f"The active window is '{title}'."}
+
+
+def read_local_file(file_path: str, debug: bool = False) -> ToolResult:
+    """Read a text file from the user's home folder and return its contents.
+
+    AppData is excluded: it holds application secrets (including this app's
+    api.json), so those files are never readable through this tool.
+    """
+    if not isinstance(file_path, str) or not file_path.strip():
+        return {"status": "FAILURE", "message": "File path cannot be empty."}
+
+    target = Path(os.path.abspath(file_path.strip().strip('"')))
+    home = Path.home().resolve()
+    if target != home and home not in target.parents:
+        _log(debug, f"read_local_file rejected '{target}' (outside home)")
+        return {
+            "status": "FAILURE",
+            "message": f"I can only read files inside your user folder ({home}), not '{target}'.",
+        }
+    if home / "AppData" in target.parents:
+        _log(debug, f"read_local_file rejected '{target}' (inside AppData)")
+        return {
+            "status": "FAILURE",
+            "message": "I can't read files inside AppData — that folder holds application secrets like API keys.",
+        }
+    if not target.is_file():
+        _log(debug, f"read_local_file: '{target}' is not a file")
+        return {"status": "FAILURE", "message": f"'{target}' is not a file."}
+    if target.stat().st_size > MAX_READ_CHARS * 4:
+        _log(debug, f"read_local_file: '{target}' too large ({target.stat().st_size} bytes)")
+        return {
+            "status": "FAILURE",
+            "message": f"'{target.name}' is too large to read safely (>{MAX_READ_CHARS * 4} bytes).",
+        }
+
+    try:
+        content = target.read_text(encoding="utf-8", errors="replace")
+    except OSError as error:
+        return {"status": "FAILURE", "message": f"Failed to read '{target}': {error}"}
+
+    clipped = ""
+    if len(content) > MAX_READ_CHARS:
+        clipped = "\n[...file truncated...]"
+        content = content[:MAX_READ_CHARS]
+    _log(debug, f"read_local_file read '{target.name}' ({len(content)} characters)")
+    return {"status": "SUCCESS", "message": f"'{target.name}' ({len(content)} characters):\n{content}{clipped}"}
