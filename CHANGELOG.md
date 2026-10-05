@@ -2,6 +2,24 @@
 
 All notable changes to GD Assistant are documented here.
 
+## v0.5.3-BETA
+
+### Highlights
+
+- **13 new local tools** — the assistant can now set timers, list and switch between open windows, write and read text files in your user folder, search the web and read the top result out for you, copy and paste clipboard text, control music playback and system volume, check battery level, and tell which window is currently focused.
+- **`--console` is now `--debug`** — the launch flag that shows live diagnostics was renamed so it can't be confused with `--terminal`; update any shortcuts that used the old name.
+
+---
+
+## v0.5.2-BETA
+
+### Highlights
+
+- **Settings, reorganized** — options are now grouped into Technical, Shortcuts, Voice, Appearance, and Personality pages; new global hotkeys summon Voice Mode (`ctrl+alt+v`) and Code Mode (`ctrl+alt+c`), every hotkey applies the moment you save, and the summoning sentence stays locked until wake word is enabled.
+- **Attachment chips** — files you queue with **+** now show as individual pills above the input, so you can pick several files at once and drop any one of them without clearing the whole list.
+
+---
+
 ## v0.5.1.1-ALPHA
 
 ### Highlights

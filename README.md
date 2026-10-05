@@ -53,7 +53,7 @@ Useful Code CLI commands:
 python main.py
 
 # Desktop app with debug output in the launching console
-python main.py --console
+python main.py --debug
 
 # Terminal-only chat
 python main.py --terminal
@@ -67,8 +67,6 @@ python main.py --code --gui
 # Re-run first-time setup
 python main.py --firstboot
 ```
-
-`--debug` is an alias for `--console`.
 
 ## Gemini Models & Settings
 
@@ -185,4 +183,4 @@ dist\GD_Assistant-v0.5.1.1-ALPHA.exe
 
 GD Assistant is an active beta project on the road to v1.0. Features, supported Gemini models, local tools, and safety rules may evolve as the project is tested and improved.
 
-See [CHANGELOG.md](CHANGELOG.md) for v0.5.1-BETA and v0.5.1.1-ALPHA release notes.
+See [CHANGELOG.md](CHANGELOG.md) for release notes.
