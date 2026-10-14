@@ -462,6 +462,13 @@ def log_debug(message: str) -> None:
     if DEBUG_CONSOLE:
         print(message, flush=True)
 
+def _read_json_dict(path: Path) -> dict[str, Any]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
 def load_app_config() -> dict[str, Any]:
     config = {
         "model": DEFAULT_MODEL,
@@ -477,21 +484,13 @@ def load_app_config() -> dict[str, Any]:
         "wake_phrase": DEFAULT_WAKE_PHRASE,
         "personality": DEFAULT_PERSONALITY
     }
-    if CONFIG_PATH.exists():
-        try:
-            with CONFIG_PATH.open(encoding="utf-8") as f:
-                data = json.load(f)
-                if isinstance(data, dict):
-                    config.update(data)
-        except Exception:
-            pass
+    config.update(_read_json_dict(CONFIG_PATH))
     return config
 
 def save_app_config(config_data: dict[str, Any]) -> None:
     current = load_app_config()
     current.update(config_data)
-    with CONFIG_PATH.open("w", encoding="utf-8") as f:
-        json.dump(current, f, indent=4)
+    CONFIG_PATH.write_text(json.dumps(current, indent=4), encoding="utf-8")
 
 
 _hotkey_registry: dict[str, dict[str, Any]] = {}
@@ -541,28 +540,13 @@ def get_api_key() -> str:
     environment_key = os.environ.get("GEMINI_API_KEY", "").strip()
     if environment_key:
         return environment_key
-    if API_CONFIG_PATH.exists():
-        try:
-            with API_CONFIG_PATH.open(encoding="utf-8") as config_file:
-                config = json.load(config_file)
-                if isinstance(config, dict):
-                    key = config.get("gemini_api_key", "")
-                    return key.strip() if isinstance(key, str) else ""
-        except Exception:
-            pass
-    return ""
+    key = _read_json_dict(API_CONFIG_PATH).get("gemini_api_key", "")
+    return key.strip() if isinstance(key, str) else ""
 
 def save_api_key(api_key: str) -> None:
-    config_data = {}
-    if API_CONFIG_PATH.exists():
-        try:
-            with API_CONFIG_PATH.open(encoding="utf-8") as f:
-                config_data = json.load(f)
-        except Exception:
-            pass
+    config_data = _read_json_dict(API_CONFIG_PATH)
     config_data["gemini_api_key"] = api_key.strip()
-    with API_CONFIG_PATH.open("w", encoding="utf-8") as f:
-        json.dump(config_data, f, indent=4)
+    API_CONFIG_PATH.write_text(json.dumps(config_data, indent=4), encoding="utf-8")
 
 def apply_combobox_style(window_root: Any, palette: dict[str, str]) -> None:
     """Style editable Combobox controls and their popup lists on Windows."""
@@ -2096,7 +2080,7 @@ def friendly_error(error: Exception) -> str:
     return "Gemini could not complete that request. Please try again."
 
 def cleanup_temp_files() -> None:
-    app_dir = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "GD Assistant")
+    app_dir = str(get_app_dir())
     screenshot_path = os.path.join(app_dir, "current_screen.png")
     if os.path.exists(screenshot_path):
         try: os.remove(screenshot_path)

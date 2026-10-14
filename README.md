@@ -162,19 +162,50 @@ python main.py
 
 The first launch opens the setup wizard to pick your theme, enter your Gemini API key with Chat and Code models, then choose your microphone, hotkey, and personality.
 
-## Building the executable
+## Building the releases
 
-Install PyInstaller, then build the windowed one-file release:
+Every release ships in three formats: a **portable** one-file exe, an **offline installer**, and a small **web installer** that downloads the portable exe from GitHub Releases. PyInstaller builds the app; [Inno Setup](https://jrsoftware.org/isinfo.php) builds both installers.
+
+### 1. Portable exe
 
 ```powershell
-python -m pip install pyinstaller
-python -m PyInstaller --noconfirm --clean GD_Assistant-v0.5.3-BETA.spec
+python -m PyInstaller --noconfirm --clean GD_Assistant-v0.6-BETA.spec
 ```
 
 The finished build is created at:
 
 ```text
-dist\GD_Assistant-v0.5.3-BETA.exe
+dist\GD_Assistant-v0.6-BETA.exe
+```
+
+### 2. Offline installer
+
+Build the folder package first, then wrap it with Inno Setup (`iscc` is installed with Inno Setup, add it to `PATH` or use its full path):
+
+```powershell
+python -m PyInstaller --noconfirm --clean GD_Assistant-v0.6-BETA-Setup.spec
+iscc installer\GD_Assistant-v0.6-BETA.iss
+```
+
+The finished installer is created at:
+
+```text
+installer\Output\GD_Assistant-v0.6-BETA-Setup.exe
+```
+
+### 3. Web installer
+
+A small downloader that fetches the portable exe from the GitHub Release at install time, so upload `dist\GD_Assistant-v0.6-BETA.exe` to the release first, then build with its SHA-256 baked in for integrity checking:
+
+```powershell
+powershell -Command "(Get-FileHash 'dist\GD_Assistant-v0.6-BETA.exe' -Algorithm SHA256).Hash"
+iscc /DPortableSHA256=<hash-from-above> installer\GD_Assistant-v0.6-BETA-Web.iss
+```
+
+The finished installer is created at:
+
+```text
+installer\Output\GD_Assistant-v0.6-BETA-WebSetup.exe
 ```
 
 ## Project Status
