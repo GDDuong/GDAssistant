@@ -2,6 +2,14 @@
 
 All notable changes to GD Assistant are documented here.
 
+## Unreleased
+
+### Highlights
+
+- **Qt interface preview** — chat, menus, settings, and first-boot setup now use the new Qt interface, with adjustable window opacity, maximize/restore controls, and smoother high-refresh motion.
+
+---
+
 ## v0.5.3-BETA
 
 ### Highlights

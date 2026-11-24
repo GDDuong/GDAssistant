@@ -20,11 +20,12 @@ orbiting inside the glass, result = the answer pill. There is deliberately
 no `speaking` visual: while the answer is spoken the result pill just stays
 on screen.
 
-Motion is restrained and physical and runs on the Qt animation framework
-(skill #21/#26): a QVariantAnimation loops the braid phase, QPropertyAnimations
-with OutBack/OutCubic easing drive the entrance bounce and the orb<->pill
-morph (~280-300ms, interruptible), window opacity fades in 250ms and out
-150ms. `reduced_motion=True` drops the decorative loop and lands state
+Motion is restrained and physical and runs on eased QTimeLines paced at one
+tick per monitor refresh (ui_qt/motion.py, skill #21/#26): one looping
+timeline drives the braid phase, property timelines with OutBack/OutCubic
+easing drive the entrance bounce and the orb<->pill morph (~280-300ms,
+interruptible), window opacity fades in 250ms and out 150ms.
+`reduced_motion=True` drops the decorative loop and lands state
 changes instantly while keeping all feedback (skill #31). The static glass
 is pre-rendered to a pixmap (skill #33: no per-frame gradient repaints),
 and text uses AAA-contrast Segoe UI (14px DemiBold answers / 11px hints).
@@ -38,7 +39,7 @@ from __future__ import annotations
 import ctypes
 import math
 
-from PySide6.QtCore import Qt, QEasingCurve, QPointF, Property, QRect, QRectF, Signal, QTimer, QPropertyAnimation, QVariantAnimation
+from PySide6.QtCore import Qt, QEasingCurve, QPointF, Property, QRect, QRectF, Signal, QTimer
 from PySide6.QtGui import (
     QColor,
     QFont,
@@ -49,7 +50,9 @@ from PySide6.QtGui import (
     QPixmap,
     QRadialGradient,
 )
-from PySide6.QtWidgets import QApplication, QWidget
+from PySide6.QtWidgets import QWidget
+
+from ui_qt.motion import SmoothPropertyLine, smooth_line
 
 GWL_EXSTYLE = -20
 WS_EX_NOACTIVATE = 0x08000000
@@ -77,12 +80,6 @@ FADE_IN_SHORT_MS = 200
 FADE_OUT_MS = 150  # exits resolve faster than entrances
 PHASE_LOOP_MS = 3300  # one lap of the braid phase clock (~1s strand cycle)
 
-# `speaking` is kept in the API for callers (a turn still speaks its
-# answer) but has no distinct visual: the result pill stays on screen.
-STATES = {"hidden", "listening", "thinking", "result", "speaking"}
-
-# NOTE: EXPAND_HINT is user-facing and hardcoded English in the prototype;
-# it moves to gd_core/translations.py (en+vi) during integration.
 EXPAND_HINT = "Click to read it all in the app"
 
 # Braided light strands inside the lens (reference close-up: a few thick,
@@ -154,32 +151,29 @@ class VoiceBubble(QWidget):
         self._layout = None  # cached result-pill layout, invalidated on new text
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
-        # Animation framework, not a manual animation clock (skill #21):
-        # QVariantAnimation drives the continuous braid phase, QPropertyAnimation
-        # drives the pop/morph state-change transitions with Qt easing curves.
-        self._phase_anim = QVariantAnimation(self)
-        self._phase_anim.setStartValue(0.0)
-        self._phase_anim.setEndValue(2.0 * math.pi)
-        self._phase_anim.setDuration(PHASE_LOOP_MS)
-        self._phase_anim.setLoopCount(-1)
-        self._phase_anim.valueChanged.connect(self._set_phase)
-        self._pop_anim = QPropertyAnimation(self, b"pop", self)
-        self._pop_anim.setEasingCurve(QEasingCurve.OutBack)
-        self._morph_anim = QPropertyAnimation(self, b"morph", self)
-        self._morph_anim.setEasingCurve(QEasingCurve.OutCubic)
+        # Animation framework, not a manual animation clock (skill #21), but
+        # paced by QTimeLine at one tick per monitor refresh (ui_qt/motion.py)
+        # — Qt's default 16ms tick judders on a 100Hz screen. One looping
+        # timeline drives the continuous braid phase; eased property timelines
+        # drive the pop/morph state-change transitions.
+        self._phase_anim = smooth_line(PHASE_LOOP_MS, self)
+        self._phase_anim.setLoopCount(0)  # 0 = infinite, like QVariantAnimation -1
+        self._phase_anim.valueChanged.connect(lambda v: self._set_phase(v * 2.0 * math.pi))
+        self._pop_anim = SmoothPropertyLine(self, "pop", QEasingCurve.OutBack, self)
+        self._morph_anim = SmoothPropertyLine(self, "morph", QEasingCurve.OutCubic, self)
         if reduced_motion:
             # No phase loop at all; a slow timer exists only so the mic-level
             # smoothing keeps the listening pulse alive (skill #31).
             self._timer.start(100)
         else:
             self._phase_anim.start()
-        self._fade = QPropertyAnimation(self, b"windowOpacity", self)
-        self._fade.setEasingCurve(QEasingCurve.OutCubic)
+        self._fade = SmoothPropertyLine(self, "windowOpacity", QEasingCurve.OutCubic, self)
         self._fade.finished.connect(self._on_fade_finished)
 
-    # Real Qt properties: QPropertyAnimation only writes registered Q_PROPERTYs,
-    # plain Python attributes are ignored (silently). Paint reads the private
-    # fields these getters/setters wrap.
+    # Real Qt properties: the eased timelines write registered Q_PROPERTYs
+    # (SmoothPropertyLine.land for reduced motion); plain Python attributes
+    # would be ignored (silently). Paint reads the private fields these
+    # getters/setters wrap.
     def _get_pop(self) -> float:
         return self._pop
 
@@ -200,8 +194,6 @@ class VoiceBubble(QWidget):
         _apply_no_activate_style(int(self.winId()))
 
     def set_state(self, state: str, result_text: str = "") -> None:
-        if state not in STATES:
-            raise ValueError(f"unknown orb state: {state}")
         previous = self._state
         self._state = state
         if state == "result" and result_text != self._result_text:
@@ -219,7 +211,7 @@ class VoiceBubble(QWidget):
             # orb->orb changes would briefly flash the old form's band.
             self._restart(self._pop_anim, min(self._pop, 0.4), 1.0, MOTION_STANDARD_MS)
             self._start_fade(self.windowOpacity(), 1.0, FADE_IN_SHORT_MS)
-            if "result" in (previous, state):
+            if previous == "result":
                 self._restart(self._morph_anim, 0.0, 1.0, MORPH_STANDARD_MS)
         if state == "result" and previous != "result":
             self._restart(self._morph_anim, 0.0, 1.0, MORPH_STANDARD_MS)  # pill unfolds open
@@ -229,16 +221,11 @@ class VoiceBubble(QWidget):
         # Interruptible transitions: restart from wherever the previous run was.
         # Reduced motion lands instantly on the end value (skill #31) — the
         # assistant state stays fully communicated, only the motion is gone.
-        anim.stop()
         if self._reduced_motion:
-            # Land the registered Qt property instantly (skill #31).
-            self.setProperty(bytes(anim.propertyName()).decode(), end)
+            anim.land(end)
             self.update()
             return
-        anim.setDuration(duration)
-        anim.setStartValue(start)
-        anim.setEndValue(end)
-        anim.start()
+        anim.run(start, end, duration)
 
     def _sync_cursor(self) -> None:
         font, _, _, truncated, _, _ = self._result_layout() if self._state == "result" else (None,) * 6
@@ -251,11 +238,7 @@ class VoiceBubble(QWidget):
         self._start_fade(self.windowOpacity(), 0.0, FADE_OUT_MS)
 
     def _start_fade(self, start: float, end: float, duration: int) -> None:
-        self._fade.stop()
-        self._fade.setDuration(duration)
-        self._fade.setStartValue(max(0.0, min(1.0, start)))
-        self._fade.setEndValue(max(0.0, min(1.0, end)))
-        self._fade.start()
+        self._fade.run(max(0.0, min(1.0, start)), max(0.0, min(1.0, end)), duration)
 
     def _on_fade_finished(self) -> None:
         if self._state == "hidden":
@@ -283,9 +266,6 @@ class VoiceBubble(QWidget):
         if self._state == "thinking":
             return 0.0  # thinking is dots-only: no rainbow band at all
         return 0.32 + 0.05 * math.sin(self._phase * 1.4)
-
-    def _wave_speed(self) -> float:
-        return 0.9
 
     # -- result pill geometry ---------------------------------------------
 
@@ -354,8 +334,8 @@ class VoiceBubble(QWidget):
 
         cx = self.width() / 2
         amp = self._wave_amplitude()
-        phase = self._phase * 1.8 * self._wave_speed()
-        morph = self._morph  # OutCubic easing is applied by QPropertyAnimation
+        phase = self._phase * 1.8 * 0.9
+        morph = self._morph  # OutCubic easing is applied by the morph timeline
 
         if self._state == "result":
             # Orb fades out and the pill unfolds/fades in on the same clock,
@@ -494,7 +474,7 @@ class VoiceBubble(QWidget):
 
     def _paint_pill(self, painter, amp, phase) -> None:
         font, shown, truncated, text_h, _, pill_full = self._result_layout()
-        # Unfold animation: _morph is eased by the QPropertyAnimation itself
+        # Unfold animation: _morph is eased by the morph timeline itself
         # (skill #21/#25); height grows from a collapsed capsule and the
         # content fades in slightly ahead of it (skill #26).
         e = self._morph
@@ -577,38 +557,3 @@ class VoiceBubble(QWidget):
             path.lineTo(point)
         path.closeSubpath()
         return path
-
-
-def main() -> None:
-    import sys
-
-    app = QApplication(sys.argv)
-    orb = VoiceBubble(reduced_motion="--reduce-motion" in sys.argv[1:])
-    screen = app.primaryScreen().availableGeometry()
-    orb.move(screen.center().x() - orb.width() // 2, screen.top() + 30)
-    orb.expandRequested.connect(lambda: print("[DEMO] expand requested -> open the app"))
-
-    long_answer = (
-        "Here's the weather for tomorrow: partly cloudy with a high of 27°C and a "
-        "low of 19°C. There's a 30% chance of light rain around 4pm, so if you're "
-        "heading out in the late afternoon it would be worth bringing an umbrella. "
-        "Mornings will stay mild around 21°C with a soft breeze from the east, and "
-        "the sun should break through again after 6pm for a clear, calm evening — "
-        "nice conditions for a walk after dinner."
-    )
-    script = [
-        (0, "listening", ""),
-        (4000, "thinking", ""),
-        (7000, "result", long_answer),  # pill unfolds; it also IS the speaking view
-        (13500, "hidden", ""),
-    ]
-    for delay, state, text in script:
-        QTimer.singleShot(delay, lambda s=state, t=text: orb.set_state(s, t))
-    QTimer.singleShot(14000, app.quit)
-
-    orb.set_state("listening")
-    sys.exit(app.exec())
-
-
-if __name__ == "__main__":
-    main()

@@ -19,9 +19,7 @@ import time
 from gd_core.attachments import display_summary, load_binary_parts, prepare_message
 from gd_core.conversations import ConversationStore
 from gd_core.translations import get_text
-from ui_tk.attach_strip import AttachStrip
-from ui_tk.mdrender import configure_tags, insert_markdown, strip_markdown
-from ui_tk.sidebar import ConversationSidebar
+from ui_tk.mdrender import strip_markdown
 from ui_tk.themes import get_theme
 from ui_tk.tray import TrayDaemon
 
@@ -62,6 +60,7 @@ APP_NAME = "GD Assistant"
 APP_VERSION = "v0.5.1.1-ALPHA"
 _active_root = None
 _active_hwnd = None
+_ui_mode = "chat"
 _mutex_handle = None
 
 DEFAULT_MODEL = "gemini-3.5-flash-lite"
@@ -476,6 +475,9 @@ def load_app_config() -> dict[str, Any]:
         "wake_word_enabled": False,
         "wake_phrase": DEFAULT_WAKE_PHRASE,
         "voice_orb_enabled": True,
+        # 0.93 ≈ the shipped glass look (alpha ~237); 1.0 = fully opaque.
+        "window_opacity": 0.93,
+        "maximize_opaque": True,
         "personality": DEFAULT_PERSONALITY
     }
     if CONFIG_PATH.exists():
@@ -495,52 +497,75 @@ def save_app_config(config_data: dict[str, Any]) -> None:
         json.dump(current, f, indent=4)
 
 
-_orb_service = None
-_orb_lock = threading.Lock()
+_qt_service = None
+_qt_lock = threading.Lock()
 _orb_expanded = False
 
 
-def _orb_raise_main_window(root) -> None:
-    """Clicking a truncated answer pill expands into the main window."""
-    def raise_it():
-        try:
-            root.deiconify()
-            root.lift()
-            root.focus_force()
-        except Exception:
-            pass
-    root.after(0, raise_it)
+def _orb_raise_main_window() -> None:
+    """Clicking a truncated answer pill expands into the chat window."""
+    service = get_qt_service()
+    if service is None:
+        return
+    if not service.chat_raise():
+        service.chat_op("show")
 
 
-def wire_orb_expand(orb, root) -> None:
+def wire_orb_expand(orb) -> None:
     """Connect the pill's expandRequested exactly once (per voice turn)."""
     global _orb_expanded
     if orb is None or _orb_expanded:
         return
     _orb_expanded = True
     try:
-        orb.on_expand(lambda: _orb_raise_main_window(root))
+        orb.on_expand(_orb_raise_main_window)
     except Exception:
         pass
 
 
-def get_orb_service(debug_flag: bool = False):
-    """Lazily start the Qt orb service (voice pop-up). Returns None if the
-    setting is off or Qt is unavailable — the Tk app must never break because
-    of the overlay (incremental-migration rule)."""
-    global _orb_service
-    if not load_app_config().get("voice_orb_enabled", True):
-        return None
-    with _orb_lock:
-        if _orb_service is None:
-            try:
-                from ui_qt.service import OrbService
+def menu_descriptors(menu: Any) -> list[dict[str, Any]]:
+    """Describe a tk.Menu as plain data for the Qt popup renderer. Indices
+    stay aligned with the menu entries so Qt can invoke the Tk command."""
+    items: list[dict[str, Any]] = []
+    last = menu.index("end")
+    if last is None:
+        return items
+    for index in range(last + 1):
+        if menu.type(index) == "separator":
+            items.append({"separator": True})
+            continue
+        items.append({
+            "label": menu.entrycget(index, "label"),
+            "enabled": str(menu.entrycget(index, "state")) != "disabled",
+        })
+    return items
 
-                _orb_service = OrbService()
+
+def invoke_menu_item(menu: Any, index: int) -> None:
+    try:
+        menu.invoke(index)
+    except Exception as error:
+        log_debug(f"[QT] menu entry {index} failed: {error}")
+
+
+def get_qt_service(debug_flag: bool = False):
+    """Lazily start the shared Qt UI service (menu popups, settings window,
+    voice orb). Returns None if Qt is unavailable — the Tk app must never
+    break because of the Qt layer (incremental-migration rule)."""
+    global _qt_service
+    with _qt_lock:
+        if _qt_service is None:
+            try:
+                from ui_qt.service import QtUiService
+
+                _qt_service = QtUiService()
+                log_debug(
+                    f"[QT] motion tick {_qt_service.motion_tick_ms} ms (refresh-matched)"
+                )
             except Exception as error:
-                log_debug(f"[ORB] unavailable: {error}")
+                log_debug(f"[QT] unavailable: {error}")
                 return None
-        return _orb_service
+        return _qt_service
 
 _hotkey_registry: dict[str, dict[str, Any]] = {}
 
@@ -1122,12 +1147,22 @@ def launch_chat_ui(
     personality: str = "",
     theme: str = DEFAULT_THEME,
 ) -> None:
-    global _active_root, _active_hwnd
+    global _active_root, _active_hwnd, _ui_mode
     try:
         import tkinter as tk
-        from tkinter import scrolledtext, messagebox, ttk, filedialog
+        from tkinter import messagebox
     except ImportError as error:
         raise RuntimeError("Tkinter is required.") from error
+
+    service = get_qt_service()
+    if service is None:
+        # The chat UI lives in Qt now; without it a bare Tk window would be a
+        # broken half-migration, so refuse to start instead of degrading.
+        notice_root = tk.Tk()
+        notice_root.withdraw()
+        messagebox.showerror(APP_NAME, get_text("qt_required_msg", lang))
+        notice_root.destroy()
+        return
 
     session = AssistantSession(client, model, personality)
     voice_app: Any = None
@@ -1151,379 +1186,160 @@ def launch_chat_ui(
 
     root = tk.Tk()
     _active_root = root
+    _ui_mode = "chat"
     root.title(f"{APP_NAME} {APP_VERSION}")
     root.minsize(680, 500)
     root.configure(padx=14, pady=14, bg=colors["background"])
+    # Chat mode lives in the Qt window; the Tk root stays withdrawn and only
+    # reappears when Code Mode packs its panel into it.
+    root.withdraw()
 
-    # Windows draws a native ``root.config(menu=...)`` bar using the system
-    # colors, which is why it stayed white in Dark mode. Use an in-window
-    # bar instead, while retaining normal File/Mode dropdown behavior.
+    # The File/Mode menus stay tk.Menu objects as the source of truth for
+    # labels/commands; they are rendered by the Qt popup (menu_descriptors +
+    # invoke_menu_item) wherever the File/Mode buttons live.
     file_menu = tk.Menu(root, tearoff=0)
     mode_menu = tk.Menu(root, tearoff=0)
 
-    def apply_ttk_theme(palette: dict[str, str]) -> None:
-        apply_combobox_style(root, palette)
+    hotkey_specs = (
+        ("open", "hotkey_label", DEFAULT_HOTKEY),
+        ("voice", "hotkey_voice_label", DEFAULT_VOICE_HOTKEY),
+        ("code", "hotkey_code_label", DEFAULT_CODE_HOTKEY),
+    )
 
-    def apply_menu_theme(palette: dict[str, str]) -> None:
-        """Keep the File/Mode bar and dropdown menus on the chosen palette."""
-        for menu in (file_menu, mode_menu):
-            menu.configure(
-                bg=palette["panel"],
-                fg=palette["foreground"],
-                activebackground=palette["accent"],
-                activeforeground="#ffffff",
-                disabledforeground=palette["muted"],
-                bd=0,
-            )
-
-    apply_ttk_theme(colors)
-    apply_menu_theme(colors)
-
-    def open_settings_dialog():
-        settings_win = tk.Toplevel(root)
-        settings_win.title(get_text("settings_title", lang))
-        settings_win.resizable(False, False)
-        settings_win.geometry("700x440")
-        settings_win.configure(bg=colors["background"])
-        settings_win.transient(root)
-        settings_win.grab_set()
-
-        label_options = {"bg": colors["background"], "fg": colors["foreground"]}
-        entry_options = {
-            "bg": colors["input"],
-            "fg": colors["foreground"],
-            "insertbackground": colors["foreground"],
-            "highlightbackground": colors["border"],
-            "highlightcolor": colors["accent"],
-            "disabledbackground": colors["input"],
-            "disabledforeground": colors["muted"],
-        }
-        check_options = {
-            "bg": colors["background"],
-            "fg": colors["foreground"],
-            "activebackground": colors["background"],
-            "activeforeground": colors["foreground"],
-            "selectcolor": colors["input"],
-            "justify": tk.LEFT,
-            "wraplength": 400,
-        }
-        radio_options = {
-            "bg": colors["background"],
-            "fg": colors["foreground"],
-            "activebackground": colors["background"],
-            "activeforeground": colors["foreground"],
-            "selectcolor": colors["input"],
-        }
-        apply_ttk_theme(colors)
-
-        current_key = get_api_key()
-        app_cfg = load_app_config()
-
-        # Categories live on the left rail; every page is built once and
-        # swapped in place, so the window keeps a stable size while switching.
-        body = tk.Frame(settings_win, bg=colors["background"])
-        body.pack(fill=tk.BOTH, expand=True, padx=16, pady=(16, 6))
-
-        rail = tk.Frame(body, bg=colors["panel"], width=168, padx=8, pady=10)
-        rail.pack(side=tk.LEFT, fill=tk.Y)
-        rail.pack_propagate(False)
-
-        tk.Label(
-            rail,
-            text=get_text("menu_settings", lang),
-            font=("Arial", 16, "bold"),
-            bg=colors["panel"],
-            fg=colors["foreground"],
-            anchor="w",
-            padx=12,
-        ).pack(fill=tk.X, pady=(2, 12))
-
-        content = tk.Frame(body, bg=colors["background"])
-        content.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(16, 0))
-
-        categories = (
-            ("technical", get_text("settings_tab_technical", lang)),
-            ("shortcuts", get_text("settings_tab_shortcuts", lang)),
-            ("voice", get_text("settings_tab_voice", lang)),
-            ("appearance", get_text("settings_tab_appearance", lang)),
-            ("personality", get_text("settings_tab_personality", lang)),
+    def apply_settings(values: dict[str, Any]) -> list[str]:
+        """Apply a settings payload built by either settings UI (Tk or Qt).
+        Returns the hotkey actions whose registration failed."""
+        nonlocal model, session, code_panel, theme, personality
+        new_hotkeys: dict[str, str] = {}
+        for action, _label_key, default_value in hotkey_specs:
+            key = "hotkey" if action == "open" else f"hotkey_{action}"
+            new_hotkeys[action] = str(values.get(key) or "").strip() or default_value
+        failed_actions = [
+            action for action, keys in new_hotkeys.items()
+            if not update_hotkey(action, keys)
+        ]
+        log_debug(
+            "[SETTINGS] Saved. Hotkeys: "
+            + ", ".join(f"{action}={keys}" for action, keys in new_hotkeys.items())
         )
-        pages: dict[str, tk.Frame] = {name: tk.Frame(content, bg=colors["background"]) for name, _ in categories}
-        rail_items: dict[str, tk.Label] = {}
-
-        def show_category(name: str) -> None:
-            for page in pages.values():
-                page.pack_forget()
-            pages[name].pack(fill=tk.BOTH, expand=True)
-            for item_name, item in rail_items.items():
-                selected = item_name == name
-                item.configure(
-                    bg=colors["accent"] if selected else colors["panel"],
-                    fg="#ffffff" if selected else colors["foreground"],
-                )
-
-        for name, title in categories:
-            item = tk.Label(
-                rail,
-                text=title,
-                font=("Arial", 10, "bold"),
-                bg=colors["panel"],
-                fg=colors["foreground"],
-                anchor="w",
-                padx=12,
-                pady=7,
-            )
-            item.pack(fill=tk.X, pady=1)
-            item.bind("<Button-1>", lambda _event, key=name: show_category(key))
-            rail_items[name] = item
-
-        def section_label(parent: tk.Frame, text: str) -> None:
-            tk.Label(parent, text=text, font=("Arial", 9, "bold"), **label_options).pack(anchor="w")
-
-        # --- Technical ---------------------------------------------------
-        technical = pages["technical"]
-        section_label(technical, get_text("api_key_label", lang))
-        key_entry = tk.Entry(technical, width=50, show="*", **entry_options)
-        key_entry.insert(0, current_key)
-        key_entry.pack(anchor="w", pady=(3, 12))
-
-        section_label(technical, get_text("chat_model_label", lang))
-        model_entry = ttk.Combobox(
-            technical,
-            width=47,
-            values=COMMON_GEMINI_MODELS,
-            state="normal",
-            style="GDAssistant.TCombobox",
+        if failed_actions:
+            log_debug(f"[SETTINGS] Hotkey registration failed for: {', '.join(failed_actions)}")
+        save_api_key(str(values.get("api_key") or "").strip())
+        new_chat_model = str(values.get("model") or "").strip() or DEFAULT_MODEL
+        new_personality = str(values.get("personality") or "").strip()
+        new_voice_device = values.get("voice_device")
+        new_opacity = max(0.4, min(1.0, float(values.get("window_opacity", 0.93) or 0.93)))
+        new_maximize_opaque = bool(values.get("maximize_opaque", True))
+        save_app_config({
+            "model": new_chat_model,
+            "code_model": str(values.get("code_model") or "").strip() or DEFAULT_CODE_MODEL,
+            "share_chat_code_model": bool(values.get("share_chat_code_model", True)),
+            "theme": values.get("theme") or DEFAULT_THEME,
+            "hotkey": new_hotkeys["open"],
+            "hotkey_voice": new_hotkeys["voice"],
+            "hotkey_code": new_hotkeys["code"],
+            "voice_device": new_voice_device,
+            "wake_word_enabled": bool(values.get("wake_word_enabled", False)),
+            "wake_phrase": str(values.get("wake_phrase") or "").strip() or DEFAULT_WAKE_PHRASE,
+            "voice_orb_enabled": bool(values.get("voice_orb_enabled", True)),
+            "window_opacity": new_opacity,
+            "maximize_opaque": new_maximize_opaque,
+            "personality": new_personality,
+            "language": values.get("language") or "en",
+        })
+        service.chat_op(
+            "opacity",
+            {"value": new_opacity, "maximize_opaque": new_maximize_opaque},
         )
-        model_entry.set(app_cfg.get("model", DEFAULT_MODEL))
-        model_entry.pack(anchor="w", pady=(3, 12))
-
-        share_models_var = tk.BooleanVar(value=app_cfg.get("share_chat_code_model", True))
-        code_model_var = tk.StringVar(value=app_cfg.get("code_model", DEFAULT_CODE_MODEL))
-        share_models_check = tk.Checkbutton(
-            technical,
-            text=get_text("share_models_label", lang),
-            variable=share_models_var,
-            **check_options,
+        log_debug(
+            f"[SETTINGS] Window opacity {new_opacity} "
+            f"(opaque when maximized: {new_maximize_opaque})"
         )
-        share_models_check.pack(anchor="w", pady=(0, 8))
+        from gd_core.voice import set_voice_input_device
 
-        section_label(technical, get_text("code_model_label", lang))
-        code_model_entry = ttk.Combobox(
-            technical,
-            width=47,
-            textvariable=code_model_var,
-            values=COMMON_GEMINI_MODELS,
-            state="normal",
-            style="GDAssistant.TCombobox",
+        set_voice_input_device(new_voice_device)
+        apply_wake_settings()
+        # Apply the selected chat model now; a Code panel is rebuilt using
+        # the current share/separate-code-model choice on its next display.
+        model = new_chat_model
+        personality = new_personality
+        session = AssistantSession(
+            client, model, personality,
+            seed_messages=(current_conv or {}).get("messages"),
         )
-        code_model_entry.pack(anchor="w", pady=(3, 12))
+        theme = values.get("theme") or DEFAULT_THEME
+        apply_chat_theme(theme)
+        code_was_visible = code_panel is not None and bool(code_panel.winfo_manager())
+        if code_panel is not None:
+            code_panel.destroy()
+            code_panel = None
+        if code_was_visible:
+            switch_to_code()
+        return failed_actions
 
-        def update_code_model_state() -> None:
-            code_model_entry.configure(state=tk.DISABLED if share_models_var.get() else tk.NORMAL)
-
-        share_models_check.configure(command=update_code_model_state)
-        update_code_model_state()
-
-        # --- Shortcuts -----------------------------------------------------
-        shortcuts = pages["shortcuts"]
-        hotkey_specs = (
-            ("open", "hotkey_label", DEFAULT_HOTKEY),
-            ("voice", "hotkey_voice_label", DEFAULT_VOICE_HOTKEY),
-            ("code", "hotkey_code_label", DEFAULT_CODE_HOTKEY),
-        )
-        hotkey_fields: dict[str, tk.Entry] = {}
-        for action, label_key, default_value in hotkey_specs:
-            section_label(shortcuts, get_text(label_key, lang))
-            field = tk.Entry(shortcuts, width=50, **entry_options)
-            field.insert(0, app_cfg.get("hotkey" if action == "open" else f"hotkey_{action}", default_value))
-            field.pack(anchor="w", pady=(3, 10))
-            hotkey_fields[action] = field
-        tk.Label(
-            shortcuts,
-            text=get_text("hotkey_hint", lang),
-            font=("Arial", 9, "italic"),
-            bg=colors["background"],
-            fg=colors["muted"],
-            justify=tk.LEFT,
-            anchor="w",
-            wraplength=440,
-        ).pack(anchor="w", pady=(4, 0))
-
-        # --- Voice ---------------------------------------------------------
+    def qt_settings_payload() -> dict[str, Any]:
         from gd_core.voice import get_input_devices
 
-        voice = pages["voice"]
-        section_label(voice, get_text("settings_mic_label", lang))
-        mic_devices = get_input_devices()
-        mic_values = [get_text("mic_default_option", lang)] + [name for _, name in mic_devices]
-        mic_entry = ttk.Combobox(
-            voice,
-            width=47,
-            values=mic_values,
-            state="readonly",
-            style="GDAssistant.TCombobox",
-        )
+        cfg = load_app_config()
+        mic_devices = list(get_input_devices())
         mic_position = 0
-        for position, (device_index, _) in enumerate(mic_devices, start=1):
-            if device_index == app_cfg.get("voice_device"):
+        for position, (device_index, _name) in enumerate(mic_devices, start=1):
+            if device_index == cfg.get("voice_device"):
                 mic_position = position
                 break
-        mic_entry.current(mic_position)
-        mic_entry.pack(anchor="w", pady=(3, 12))
+        return {
+            "api_key": get_api_key(),
+            "models": list(COMMON_GEMINI_MODELS),
+            "model": cfg.get("model", DEFAULT_MODEL),
+            "code_model": cfg.get("code_model", DEFAULT_CODE_MODEL),
+            "share_chat_code_model": bool(cfg.get("share_chat_code_model", True)),
+            "hotkey": cfg.get("hotkey", DEFAULT_HOTKEY),
+            "hotkey_voice": cfg.get("hotkey_voice", DEFAULT_VOICE_HOTKEY),
+            "hotkey_code": cfg.get("hotkey_code", DEFAULT_CODE_HOTKEY),
+            "mic_devices": mic_devices,
+            "mic_position": mic_position,
+            "wake_word_enabled": bool(cfg.get("wake_word_enabled", False)),
+            "wake_phrase": cfg.get("wake_phrase", DEFAULT_WAKE_PHRASE),
+            "voice_orb_enabled": bool(cfg.get("voice_orb_enabled", True)),
+            "theme": cfg.get("theme", DEFAULT_THEME),
+            "language": cfg.get("language", "en"),
+            "window_opacity": cfg.get("window_opacity", 0.93),
+            "maximize_opaque": bool(cfg.get("maximize_opaque", True)),
+            "personality": cfg.get("personality", ""),
+        }
 
-        wake_var = tk.BooleanVar(value=bool(app_cfg.get("wake_word_enabled", False)))
-        wake_check = tk.Checkbutton(
-            voice,
-            text=get_text("wake_enable_label", lang),
-            variable=wake_var,
-            **check_options,
-        )
-        wake_check.pack(anchor="w", pady=(0, 8))
-
-        section_label(voice, get_text("wake_phrase_label", lang))
-        wake_entry = tk.Entry(voice, width=50, **entry_options)
-        wake_entry.insert(0, app_cfg.get("wake_phrase", DEFAULT_WAKE_PHRASE))
-        wake_entry.pack(anchor="w", pady=(3, 10))
-
-        orb_var = tk.BooleanVar(value=bool(app_cfg.get("voice_orb_enabled", True)))
-        tk.Checkbutton(
-            voice,
-            text=get_text("voice_orb_label", lang),
-            variable=orb_var,
-            **check_options,
-        ).pack(anchor="w", pady=(8, 0))
-
-        # The summoning sentence only means something while the listener runs.
-        def update_wake_inputs_state() -> None:
-            wake_entry.configure(state=tk.NORMAL if wake_var.get() else tk.DISABLED)
-
-        wake_check.configure(command=update_wake_inputs_state)
-        update_wake_inputs_state()
-
-        # --- Appearance ------------------------------------------------------
-        appearance = pages["appearance"]
-        lang_var = tk.StringVar(value=app_cfg.get("language", "en"))
-        theme_var = tk.StringVar(value=app_cfg.get("theme", DEFAULT_THEME))
-
-        section_label(appearance, get_text("appearance_label", lang))
-        tk.Radiobutton(appearance, text=get_text("appearance_dark", lang), variable=theme_var, value="dark", **radio_options).pack(anchor="w")
-        tk.Radiobutton(appearance, text=get_text("appearance_light", lang), variable=theme_var, value="light", **radio_options).pack(anchor="w", pady=(0, 12))
-
-        section_label(appearance, get_text("language_label", lang))
-        tk.Radiobutton(appearance, text="English", variable=lang_var, value="en", **radio_options).pack(anchor="w")
-        tk.Radiobutton(appearance, text="Tiếng Việt", variable=lang_var, value="vi", **radio_options).pack(anchor="w")
-
-        # --- Personality -------------------------------------------------------
-        personality_page = pages["personality"]
-        section_label(personality_page, get_text("personality_label", lang))
-        pers_text = tk.Text(
-            personality_page,
-            height=8,
-            width=50,
-            bg=colors["input"],
-            fg=colors["foreground"],
-            insertbackground=colors["foreground"],
-            highlightbackground=colors["border"],
-            highlightcolor=colors["accent"],
-        )
-        pers_text.insert("1.0", app_cfg.get("personality", ""))
-        pers_text.pack(anchor="w", pady=(3, 0))
-
-        footer = tk.Frame(settings_win, bg=colors["background"])
-        footer.pack(fill=tk.X, padx=16, pady=(6, 14))
-
-        def save_settings():
-            nonlocal model, session, code_panel, theme, personality
-            new_key = key_entry.get().strip()
-            if not new_key:
-                messagebox.showerror("Error", get_text("err_empty_key", lang), parent=settings_win)
-                return
-            new_hotkeys = {
-                action: hotkey_fields[action].get().strip() or default_value
-                for action, _label_key, default_value in hotkey_specs
-            }
-            failed_actions = [
-                action for action, keys in new_hotkeys.items()
-                if not update_hotkey(action, keys)
-            ]
-            log_debug(
-                "[SETTINGS] Saved. Hotkeys: "
-                + ", ".join(f"{action}={keys}" for action, keys in new_hotkeys.items())
+    def finish_qt_settings(values: dict[str, Any]) -> None:
+        # Runs on the Tk thread (scheduled by open_qt_settings via root.after).
+        if not str(values.get("api_key") or "").strip():
+            service.notice("Error", get_text("err_empty_key", lang), "error")
+            return
+        failed_actions = apply_settings(values)
+        if failed_actions:
+            service.notice(
+                get_text("settings_success_title", lang),
+                get_text("settings_hotkey_failed_msg", lang),
+                "warning",
             )
-            if failed_actions:
-                log_debug(f"[SETTINGS] Hotkey registration failed for: {', '.join(failed_actions)}")
-            save_api_key(new_key)
-            new_chat_model = model_entry.get().strip() or DEFAULT_MODEL
-            mic_choice = mic_entry.current()
-            new_voice_device = None if mic_choice <= 0 else mic_devices[mic_choice - 1][0]
-            save_app_config({
-                "model": new_chat_model,
-                "code_model": code_model_var.get().strip() or DEFAULT_CODE_MODEL,
-                "share_chat_code_model": share_models_var.get(),
-                "theme": theme_var.get(),
-                "hotkey": new_hotkeys["open"],
-                "hotkey_voice": new_hotkeys["voice"],
-                "hotkey_code": new_hotkeys["code"],
-                "voice_device": new_voice_device,
-                "wake_word_enabled": wake_var.get(),
-                "wake_phrase": wake_entry.get().strip() or DEFAULT_WAKE_PHRASE,
-                "voice_orb_enabled": orb_var.get(),
-                "personality": pers_text.get("1.0", tk.END).strip(),
-                "language": lang_var.get(),
-            })
-            from gd_core.voice import set_voice_input_device
-
-            set_voice_input_device(new_voice_device)
-            apply_wake_settings()
-            # Apply the selected chat model now; a Code panel is rebuilt using
-            # the current share/separate-code-model choice on its next display.
-            model = new_chat_model
-            personality = pers_text.get("1.0", tk.END).strip()
-            session = AssistantSession(
-                client, model, personality,
-                seed_messages=(current_conv or {}).get("messages"),
+        else:
+            service.notice(
+                get_text("settings_success_title", lang),
+                get_text("settings_saved_msg", lang),
             )
-            theme = theme_var.get()
-            apply_chat_theme(theme)
-            code_was_visible = code_panel is not None and bool(code_panel.winfo_manager())
-            if code_panel is not None:
-                code_panel.destroy()
-                code_panel = None
-            if code_was_visible:
-                switch_to_code()
-            if failed_actions:
-                messagebox.showwarning(
-                    get_text("settings_success_title", lang),
-                    get_text("settings_hotkey_failed_msg", lang),
-                    parent=settings_win,
-                )
-            else:
-                messagebox.showinfo(get_text("settings_success_title", lang), get_text("settings_saved_msg", lang), parent=settings_win)
-            settings_win.destroy()
 
-        tk.Button(
-            footer,
-            text=get_text("btn_close", lang),
-            command=settings_win.destroy,
-            bg=colors["button"],
-            fg=colors["foreground"],
-            activebackground=colors["button_active"],
-            activeforeground=colors["foreground"],
-            width=12,
-        ).pack(side=tk.RIGHT)
-        tk.Button(
-            footer,
-            text=get_text("btn_save", lang),
-            command=save_settings,
-            bg=colors["accent"],
-            fg="#ffffff",
-            activebackground=colors["accent_active"],
-            activeforeground="#ffffff",
-            width=16,
-        ).pack(side=tk.RIGHT, padx=(0, 8))
+    def open_qt_settings() -> bool:
+        try:
+            service.on_settings_saved(
+                lambda values: root.after(0, lambda: finish_qt_settings(values))
+            )
+            service.open_settings(qt_settings_payload(), colors, lang)
+            return True
+        except Exception as error:
+            log_debug(f"[QT] settings window failed: {error}")
+            return False
 
-        show_category("technical")
+    def open_settings_dialog() -> None:
+        if not open_qt_settings():
+            log_debug("[QT] settings unavailable")
 
     file_menu.add_command(label=get_text("menu_settings", lang), command=open_settings_dialog)
     file_menu.add_separator()
@@ -1534,12 +1350,28 @@ def launch_chat_ui(
 
     store = ConversationStore()
     current_conv: dict[str, Any] | None = None
+    sidebar_archived = False
+
+    def sidebar_rows() -> list[dict[str, Any]]:
+        suffix = get_text("sidebar_archived_suffix", lang)
+        rows: list[dict[str, Any]] = []
+        for conv in store.list_conversations("chat", include_archived=sidebar_archived):
+            title = str(conv.get("title") or "...")
+            label = title + suffix if conv.get("status") == "archived" else title
+            rows.append({"id": conv["id"], "label": label, "title": title})
+        return rows
+
+    def push_sidebar_rows() -> None:
+        service.chat_op("rows", {
+            "rows": sidebar_rows(),
+            "current": current_conv["id"] if current_conv else None,
+        })
 
     def persist_chat_message(conv: dict[str, Any] | None, role: str, content: str) -> None:
         if conv is None:
             return
         store.append_message(conv["id"], role, content)
-        chat_sidebar.refresh()
+        push_sidebar_rows()
 
     def apply_chat_conversation(conv: dict[str, Any]) -> None:
         nonlocal current_conv, session
@@ -1547,16 +1379,14 @@ def launch_chat_ui(
         session = AssistantSession(
             client, model, personality, seed_messages=conv.get("messages") or []
         )
-        transcript.configure(state=tk.NORMAL)
-        transcript.delete("1.0", tk.END)
-        transcript.configure(state=tk.DISABLED)
+        service.chat_op("clear")
         for message in conv.get("messages") or []:
             content = str(message.get("content", ""))
             if message.get("role") == "user":
                 add_message("You", content)
             else:
                 add_markdown_message("GD", content)
-        chat_sidebar.set_current(conv["id"])
+        push_sidebar_rows()
 
     def start_new_chat() -> None:
         conv = store.create_conversation("chat", title=get_text("sidebar_new_chat", lang))
@@ -1570,46 +1400,51 @@ def launch_chat_ui(
         if conv is not None and conv.get("type") == "chat":
             apply_chat_conversation(conv)
 
-    def convert_chat_to_code(conv_id: str) -> None:
+    def convert_chat_to_code(conv_id: str, target_dir: str) -> None:
+        # The confirm + folder pick ran in the Qt sidebar; this only mutates
+        # the store and switches modes.
         conv = store.load_conversation(conv_id)
         if conv is None or conv.get("type") != "chat":
             return
-        if not messagebox.askyesno(
-            get_text("ctx_to_code", lang), get_text("convert_confirm", lang), parent=root
-        ):
-            return
-        chosen = filedialog.askdirectory(parent=root, title=get_text("convert_pick_dir", lang))
-        if not chosen:
-            return
-        store.convert_to_code(conv_id, chosen)
-        chat_sidebar.refresh()
+        store.convert_to_code(conv_id, target_dir)
         if current_conv is not None and current_conv["id"] == conv_id:
             start_new_chat()
+        else:
+            push_sidebar_rows()
         switch_to_code(conv_id)
 
-    chat_sidebar = ConversationSidebar(
-        root,
-        store,
-        "chat",
-        colors,
-        lang,
-        on_open=open_chat_conversation,
-        on_new=start_new_chat,
-        on_convert=convert_chat_to_code,
-    )
-    chat_sidebar.pack(side=tk.LEFT, fill=tk.Y)
+    menu_button_rects: dict[str, list[int]] = {}
 
-    def show_dropdown(menu: Any, button: Any) -> None:
-        """Open a reliable themed popup under one of the custom menu buttons."""
+    def show_dropdown(menu: Any, rects: dict[str, list[int]]) -> None:
+        """Open the themed popup for a File/Mode menu. ``rects`` carries the
+        live button rectangles (global coords) so a dismiss click swallowed by
+        the popup's mouse grab can be replayed as a sibling menu open."""
+        menu_button_rects.clear()
+        menu_button_rects.update(dict(rects))
         try:
-            menu.tk_popup(button.winfo_rootx(), button.winfo_rooty() + button.winfo_height())
-        finally:
-            menu.grab_release()
+            service.on_menu_trigger(
+                lambda index: root.after(0, lambda: invoke_menu_item(menu, index))
+            )
+            service.on_menu_closed(
+                lambda point: root.after(0, lambda: handle_menu_dismiss(menu, point))
+            )
+            service.show_menu(menu_descriptors(menu), colors)
+        except Exception as error:
+            log_debug(f"[QT] menu failed: {error}")
+
+    def tk_button_rect(button: Any) -> list[int]:
+        return [
+            button.winfo_rootx(), button.winfo_rooty(),
+            button.winfo_width(), button.winfo_height(),
+        ]
+
+    def tk_menu_rects() -> dict[str, list[int]]:
+        return {"file": tk_button_rect(file_button), "mode": tk_button_rect(mode_button)}
 
     file_button = tk.Button(
         mode_bar,
         text=get_text("menu_file", lang),
-        command=lambda: show_dropdown(file_menu, file_button),
+        command=lambda: show_dropdown(file_menu, tk_menu_rects()),
         relief=tk.FLAT,
         bg=colors["panel"],
         fg=colors["foreground"],
@@ -1621,7 +1456,7 @@ def launch_chat_ui(
     mode_button = tk.Button(
         mode_bar,
         text=get_text("menu_mode", lang),
-        command=lambda: show_dropdown(mode_menu, mode_button),
+        command=lambda: show_dropdown(mode_menu, tk_menu_rects()),
         relief=tk.FLAT,
         bg=colors["panel"],
         fg=colors["foreground"],
@@ -1631,169 +1466,93 @@ def launch_chat_ui(
     )
     mode_button.pack(side=tk.LEFT)
 
-    root.update_idletasks()
-    hwnd = root.winfo_id()
-    _active_hwnd = ctypes.windll.user32.GetParent(hwnd) or hwnd
+    def handle_menu_dismiss(menu: Any, point: Any) -> None:
+        """Replay a dismiss click the Qt popup's mouse grab swallowed: if the
+        user hit the sibling File/Mode button, open that menu right away so
+        switching menus stays one click (Esc and item picks arrive as None)."""
+        if point is None:
+            return
+        sibling_kind = "mode" if menu is file_menu else "file"
+        rect = menu_button_rects.get(sibling_kind)
+        if not rect:
+            return
+        x, y = point
+        if rect[0] <= x < rect[0] + rect[2] and rect[1] <= y < rect[1] + rect[3]:
+            show_dropdown(mode_menu if menu is file_menu else file_menu, menu_button_rects)
+
+    def capture_root_hwnd() -> None:
+        """Lazily resolve the Tk root's top-level hwnd for bring_to_foreground.
+        Only Code Mode needs it, and by then the root is actually mapped."""
+        global _active_hwnd
+        if _active_hwnd is not None:
+            return
+        try:
+            root.update_idletasks()
+            hwnd = root.winfo_id()
+            _active_hwnd = ctypes.windll.user32.GetParent(hwnd) or hwnd
+        except Exception as error:
+            log_debug(f"[HWND] capture failed: {error}")
+
     root.protocol("WM_DELETE_WINDOW", root.withdraw)
-    root.after(100, lambda: bring_to_foreground(_active_hwnd))
-
-    chat_frame = tk.Frame(root, bg=colors["background"])
-    chat_frame.pack(fill=tk.BOTH, expand=True)
-
-    transcript = scrolledtext.ScrolledText(
-        chat_frame,
-        wrap=tk.WORD,
-        state=tk.DISABLED,
-        bg=colors["panel"],
-        fg=colors["foreground"],
-        insertbackground=colors["foreground"],
-        highlightbackground=colors["border"],
-        highlightcolor=colors["accent"],
-        font=("Segoe UI", 10),
-    )
-    transcript.grid(row=0, column=0, columnspan=4, sticky="nsew")
-    configure_tags(transcript, colors)
-
-    # The plus button sits left of the text box and queues files for the next
-    # message; text files are inlined, images/PDFs ride along as attachments.
-    attach_button = tk.Button(
-        chat_frame,
-        text="+",
-        width=3,
-        bg=colors["button"],
-        fg=colors["foreground"],
-        activebackground=colors["button_active"],
-        activeforeground=colors["foreground"],
-    )
-    attach_button.grid(row=1, column=0, sticky="w", pady=(12, 0))
 
     pending_files: list[Path] = []
 
-    message_box = tk.Entry(
-        chat_frame,
-        bg=colors["input"],
-        fg=colors["foreground"],
-        insertbackground=colors["foreground"],
-        highlightbackground=colors["border"],
-        highlightcolor=colors["accent"],
-    )
-    message_box.grid(row=1, column=1, sticky="ew", pady=(12, 0))
+    def push_attachments() -> None:
+        service.chat_op("attachments", {"paths": [str(path) for path in pending_files]})
 
-    send_button = tk.Button(
-        chat_frame,
-        text=get_text("btn_send", lang),
-        bg=colors["accent"],
-        fg="#ffffff",
-        activebackground=colors["accent_active"],
-        activeforeground="#ffffff",
-    )
-    send_button.grid(row=1, column=2, sticky="e", padx=(8, 0), pady=(12, 0))
-
-    mic_button = tk.Button(
-        chat_frame,
-        text=get_text("btn_voice", lang),
-        width=12,
-        bg=colors["button"],
-        fg=colors["foreground"],
-        activebackground=colors["button_active"],
-        activeforeground=colors["foreground"],
-    )
-    mic_button.grid(row=1, column=3, sticky="e", padx=(6, 0), pady=(12, 0))
-
-    attach_strip = AttachStrip(
-        chat_frame,
-        colors,
-        clear_text=get_text("attach_clear", lang),
-        on_remove=lambda index: remove_attachment(index),
-        on_clear=lambda: clear_attachments(),
-    )
-
-    status = tk.StringVar(value=get_text("status_ready", lang))
-    status_label = tk.Label(
-        chat_frame,
-        textvariable=status,
-        anchor="w",
-        bg=colors["background"],
-        fg=colors["foreground"],
-    )
-    status_label.grid(row=3, column=0, columnspan=4, sticky="ew", pady=(6, 0))
-
-    chat_frame.columnconfigure(1, weight=1)
-    chat_frame.rowconfigure(0, weight=1)
-
-    def refresh_attachments() -> None:
-        if pending_files:
-            attach_strip.refresh(pending_files)
-            attach_strip.grid(row=2, column=0, columnspan=4, sticky="w", pady=(4, 0))
-        else:
-            attach_strip.grid_remove()
+    def queue_attachments(paths: list[Any]) -> None:
+        added = 0
+        for item in paths:
+            path = Path(str(item))
+            if path not in pending_files:
+                pending_files.append(path)
+                added += 1
+        if added:
+            log_debug(f"[ATTACH] Queued {added} file(s) for the next message")
+        push_attachments()
 
     def remove_attachment(index: int) -> None:
         if 0 <= index < len(pending_files):
             pending_files.pop(index)
-        refresh_attachments()
+        push_attachments()
 
     def clear_attachments() -> None:
         pending_files.clear()
-        refresh_attachments()
+        push_attachments()
 
-    def open_attach_dialog() -> None:
-        chosen = filedialog.askopenfilenames(parent=root, title=get_text("attach_files_title", lang))
-        if chosen:
-            log_debug(f"[ATTACH] Queued {len(chosen)} file(s) for the next message")
-        for item in chosen:
-            path = Path(item)
-            if path not in pending_files:
-                pending_files.append(path)
-        refresh_attachments()
+    class _StatusProxy:
+        """StringVar stand-in: routes status text into the Qt chat window."""
 
-    attach_button.configure(command=open_attach_dialog)
+        def set(self, text: str) -> None:
+            service.chat_op("status", {"text": text})
+
+    status = _StatusProxy()
+    inputs_enabled = True
 
     def add_message(speaker: str, text: str) -> None:
-        transcript.configure(state=tk.NORMAL)
-        transcript.insert(tk.END, f"{speaker}: {text}\n\n")
-        transcript.configure(state=tk.DISABLED)
-        transcript.see(tk.END)
+        service.chat_op("append", {"speaker": speaker, "text": text, "markdown": False})
 
     def add_markdown_message(speaker: str, text: str) -> None:
-        transcript.configure(state=tk.NORMAL)
-        transcript.insert(tk.END, f"{speaker}: ")
-        insert_markdown(transcript, text)
-        transcript.insert(tk.END, "\n\n")
-        transcript.configure(state=tk.DISABLED)
-        transcript.see(tk.END)
+        service.chat_op("append", {"speaker": speaker, "text": text, "markdown": True})
 
     def set_inputs_enabled(enabled: bool) -> None:
-        state = tk.NORMAL if enabled else tk.DISABLED
-        message_box.configure(state=state)
-        send_button.configure(state=state)
-        mic_button.configure(state=state)
-        attach_button.configure(state=state)
+        nonlocal inputs_enabled
+        inputs_enabled = enabled
+        service.chat_op("inputs", {"enabled": enabled})
+
+    def set_mic_label(text: str) -> None:
+        service.chat_op("mic_text", {"text": text})
 
     stream_pieces: list[str] = []
     stream_render_job: str | None = None
 
     def begin_stream_block() -> None:
-        transcript.configure(state=tk.NORMAL)
-        transcript.insert(tk.END, "GD: ")
-        transcript.mark_set("stream_start", "end-1c")
-        transcript.mark_gravity("stream_start", tk.LEFT)
-        transcript.configure(state=tk.DISABLED)
-
-    def end_stream_block() -> None:
-        if "stream_start" in transcript.mark_names():
-            transcript.mark_unset("stream_start")
+        service.chat_op("stream_begin")
 
     def render_stream_text() -> None:
         nonlocal stream_render_job
         stream_render_job = None
-        if "stream_start" not in transcript.mark_names():
-            return
-        transcript.configure(state=tk.NORMAL)
-        transcript.delete("stream_start", "end-1c")
-        insert_markdown(transcript, "".join(stream_pieces))
-        transcript.configure(state=tk.DISABLED)
-        transcript.see(tk.END)
+        service.chat_op("stream_replace", {"text": "".join(stream_pieces)})
 
     def schedule_stream_render() -> None:
         nonlocal stream_render_job
@@ -1803,22 +1562,7 @@ def launch_chat_ui(
     active_stop_event: threading.Event | None = None
 
     def set_send_stop_mode(stop_mode: bool) -> None:
-        if stop_mode:
-            send_button.configure(
-                text=get_text("btn_stop", lang),
-                command=stop_current_request,
-                state=tk.NORMAL,
-                bg=colors["error"],
-                activebackground=colors["error"],
-            )
-        else:
-            send_button.configure(
-                text=get_text("btn_send", lang),
-                command=submit_message,
-                bg=colors["accent"],
-                activebackground=colors["accent_active"],
-                state=tk.NORMAL,
-            )
+        service.chat_op("send_mode", {"stop": stop_mode})
 
     def stop_current_request() -> None:
         if active_stop_event is not None:
@@ -1826,12 +1570,11 @@ def launch_chat_ui(
         status.set(get_text("status_stopping", lang))
 
     def apply_chat_theme(theme_name: str) -> None:
-        """Apply the selected shared appearance to the active Chat widgets."""
+        """Apply the selected shared appearance to the Qt chat window and to
+        the Tk widgets that remain (the Code Mode host and its menu bar)."""
         nonlocal colors
         colors = get_theme(theme_name)
         root.configure(bg=colors["background"])
-        apply_ttk_theme(colors)
-        apply_menu_theme(colors)
         mode_bar.configure(bg=colors["panel"])
         for button in (file_button, mode_button):
             button.configure(
@@ -1840,41 +1583,7 @@ def launch_chat_ui(
                 activebackground=colors["button_active"],
                 activeforeground=colors["foreground"],
             )
-        chat_frame.configure(bg=colors["background"])
-        transcript.configure(
-            bg=colors["panel"],
-            fg=colors["foreground"],
-            insertbackground=colors["foreground"],
-            highlightbackground=colors["border"],
-            highlightcolor=colors["accent"],
-        )
-        message_box.configure(
-            bg=colors["input"],
-            fg=colors["foreground"],
-            insertbackground=colors["foreground"],
-            highlightbackground=colors["border"],
-            highlightcolor=colors["accent"],
-        )
-        send_button.configure(
-            bg=colors["accent"],
-            activebackground=colors["accent_active"],
-        )
-        mic_button.configure(
-            bg=colors["button"],
-            fg=colors["foreground"],
-            activebackground=colors["button_active"],
-            activeforeground=colors["foreground"],
-        )
-        attach_button.configure(
-            bg=colors["button"],
-            fg=colors["foreground"],
-            activebackground=colors["button_active"],
-            activeforeground=colors["foreground"],
-        )
-        attach_strip.update_palette(colors)
-        status_label.configure(bg=colors["background"], fg=colors["foreground"])
-        configure_tags(transcript, colors)
-        chat_sidebar.update_palette(colors)
+        service.chat_op("palette", {"palette": colors})
 
     def perform_text_request(
         message: str,
@@ -1905,32 +1614,34 @@ def launch_chat_ui(
             active_stop_event = None
             if stream_render_job is not None:
                 root.after_cancel(stream_render_job)
-            render_stream_text()
-            transcript.configure(state=tk.NORMAL)
             if request_failed:
-                transcript.insert(tk.END, reply)
-            elif not streamed:
-                insert_markdown(transcript, reply)
-            transcript.insert(tk.END, "\n\n")
-            transcript.configure(state=tk.DISABLED)
-            transcript.see(tk.END)
-            end_stream_block()
+                if streamed:
+                    service.chat_op("stream_replace", {"text": "".join(stream_pieces)})
+                service.chat_op("stream_finish", {
+                    "text": reply, "markdown": False, "append": bool(streamed),
+                })
+            elif streamed:
+                service.chat_op("stream_finish", {
+                    "text": "".join(stream_pieces), "markdown": True,
+                })
+            else:
+                service.chat_op("stream_finish", {"text": reply, "markdown": True})
             if not request_failed and reply:
                 persist_chat_message(request_conv, "assistant", reply)
             set_send_stop_mode(False)
             status.set(get_text("status_ready", lang))
             set_inputs_enabled(True)
-            message_box.focus_set()
+            service.chat_op("focus_input")
         root.after(0, finish)
 
-    def submit_message(_event: Any = None) -> None:
+    def submit_message(text: str) -> None:
         nonlocal active_stop_event
-        message = message_box.get().strip()
+        message = str(text or "").strip()
         if not message and not pending_files: return
         if message and message.lower() in {"/quit", "/exit"}:
             root.destroy()
             os._exit(0)
-        message_box.delete(0, tk.END)
+        service.chat_op("clear_input")
         files = list(pending_files)
         clear_attachments()
         if files:
@@ -1957,8 +1668,8 @@ def launch_chat_ui(
         nonlocal voice_app
         request_session = session
         request_conv = current_conv
-        orb = get_orb_service()
-        wire_orb_expand(orb, root)
+        orb = get_qt_service() if load_app_config().get("voice_orb_enabled", True) else None
+        wire_orb_expand(orb)
         try:
             if wake_listener is not None:
                 wake_listener.pause()
@@ -1968,7 +1679,7 @@ def launch_chat_ui(
 
                 voice_app = get_voice_assistant(debug=DEBUG_CONSOLE, device=load_app_config().get("voice_device"))
 
-            root.after(0, lambda: [status.set(get_text("status_listening", lang)), mic_button.configure(text=get_text("status_listening", lang))])
+            root.after(0, lambda: [status.set(get_text("status_listening", lang)), set_mic_label(get_text("status_listening", lang))])
             if orb is not None:
                 orb.show_state("listening")
             user_text = voice_app.listen_dynamic(
@@ -1978,7 +1689,7 @@ def launch_chat_ui(
                 def finish_empty():
                     add_message("GD", get_text("voice_no_speech", lang))
                     status.set(get_text("status_ready", lang))
-                    mic_button.configure(text=get_text("btn_voice", lang))
+                    set_mic_label(get_text("btn_voice", lang))
                     set_inputs_enabled(True)
                 if orb is not None:
                     orb.hide()
@@ -1987,12 +1698,12 @@ def launch_chat_ui(
 
             if orb is not None:
                 orb.show_state("thinking")
-            root.after(0, lambda: [add_message("You (Voice)", user_text), persist_chat_message(request_conv, "user", user_text), status.set(get_text("status_thinking", lang)), mic_button.configure(text=get_text("status_thinking", lang))])
+            root.after(0, lambda: [add_message("You (Voice)", user_text), persist_chat_message(request_conv, "user", user_text), status.set(get_text("status_thinking", lang)), set_mic_label(get_text("status_thinking", lang))])
             reply = strip_markdown(request_session.ask(f"[VOICE] {user_text}"))
 
             if orb is not None:
                 orb.show_state("result", reply)
-            root.after(0, lambda: [add_message("GD", reply), persist_chat_message(request_conv, "assistant", reply), status.set(get_text("status_speaking", lang)), mic_button.configure(text=get_text("status_speaking", lang))])
+            root.after(0, lambda: [add_message("GD", reply), persist_chat_message(request_conv, "assistant", reply), status.set(get_text("status_speaking", lang)), set_mic_label(get_text("status_speaking", lang))])
             voice_app.speak(reply)
             if orb is not None:
                 orb.hide_after_turn()
@@ -2003,20 +1714,16 @@ def launch_chat_ui(
         finally:
             def restore_ui():
                 status.set(get_text("status_ready", lang))
-                mic_button.configure(text=get_text("btn_voice", lang))
+                set_mic_label(get_text("btn_voice", lang))
                 set_inputs_enabled(True)
                 if wake_listener is not None:
                     wake_listener.resume()
-                message_box.focus_set()
+                service.chat_op("focus_input")
             root.after(0, restore_ui)
 
     def start_voice_listening() -> None:
         set_inputs_enabled(False)
         threading.Thread(target=perform_voice_request, daemon=True).start()
-
-    send_button.configure(command=submit_message)
-    mic_button.configure(command=start_voice_listening)
-    message_box.bind("<Return>", submit_message)
 
     # Chat and Code intentionally share one Tk root. Switching modes never
     # starts a second GD Assistant process, so the single-instance guard stays
@@ -2029,9 +1736,9 @@ def launch_chat_ui(
         # Wake word drives Chat Mode only; Code Mode sessions ignore it.
         if code_panel is not None and code_panel.winfo_manager():
             return
-        if str(mic_button["state"]) == tk.DISABLED:
+        if not inputs_enabled:
             return
-        root.deiconify()
+        service.chat_op("show")
         start_voice_listening()
 
     def apply_wake_settings() -> None:
@@ -2057,19 +1764,19 @@ def launch_chat_ui(
     apply_wake_settings()
 
     def switch_to_chat() -> None:
+        global _ui_mode
+        _ui_mode = "chat"
         if code_panel is not None:
             code_panel.pack_forget()
-        chat_sidebar.pack_forget()
-        chat_frame.pack_forget()
-        chat_sidebar.pack(side=tk.LEFT, fill=tk.Y)
-        chat_frame.pack(fill=tk.BOTH, expand=True)
-        root.title(f"{APP_NAME} {APP_VERSION} — {get_text('mode_chat', lang)}")
-        message_box.focus_set()
+        root.withdraw()
+        service.chat_op("show")
+        service.chat_op("focus_input")
 
     def switch_to_code(conversation_id: str | None = None) -> None:
+        global _ui_mode
         nonlocal code_panel
-        chat_sidebar.pack_forget()
-        chat_frame.pack_forget()
+        _ui_mode = "code"
+        service.chat_op("hide")
         if code_panel is None:
             from ui_tk.code_gui import CodeAgentPanel
 
@@ -2087,8 +1794,11 @@ def launch_chat_ui(
             )
         elif conversation_id:
             code_panel.load_conversation(conversation_id)
+        root.deiconify()
+        capture_root_hwnd()
         code_panel.pack(fill=tk.BOTH, expand=True)
         root.title(f"{APP_NAME} {APP_VERSION} — {get_text('mode_code', lang)}")
+        root.after(50, lambda: bring_to_foreground(_active_hwnd) if _active_hwnd else None)
 
     # Voice and Code shortcuts only mean something while this window exists,
     # so they join the global "open" hotkey here rather than in main().
@@ -2099,7 +1809,6 @@ def launch_chat_ui(
 
     def hotkey_code_action() -> None:
         def toggle() -> None:
-            root.deiconify()
             if code_panel is not None and code_panel.winfo_manager():
                 log_debug("[HOTKEY] Code hotkey -> switching to Chat")
                 switch_to_chat()
@@ -2147,13 +1856,80 @@ def launch_chat_ui(
     mode_menu.add_separator()
     mode_menu.add_command(label=get_text("mode_open_code_terminal", lang), command=open_terminal_code)
 
+    def handle_chat_event(op: str, payload: Any) -> None:
+        """Dispatch a gesture from the Qt chat window (always on the Tk thread)."""
+        nonlocal sidebar_archived
+        if op == "send":
+            submit_message(str(payload or ""))
+        elif op == "stop":
+            stop_current_request()
+        elif op == "mic":
+            start_voice_listening()
+        elif op == "attach_files":
+            queue_attachments(list(payload or []))
+        elif op == "remove_attachment":
+            remove_attachment(int(payload))
+        elif op == "clear_attachments":
+            clear_attachments()
+        elif op == "menu":
+            data = payload or {}
+            kind = str(data.get("kind") or "file")
+            show_dropdown(file_menu if kind == "file" else mode_menu, data.get("rects") or {})
+        elif op == "close":
+            log_debug("[CHAT] Window hidden; app stays alive in the tray")
+        elif op == "sidebar_open":
+            open_chat_conversation(payload)
+        elif op == "sidebar_new":
+            start_new_chat()
+        elif op == "sidebar_rename":
+            conv_id, title = payload
+            store.rename_conversation(str(conv_id), str(title))
+            push_sidebar_rows()
+        elif op == "sidebar_status":
+            conv_id, status_value = payload
+            store.set_status(str(conv_id), str(status_value))
+            if status_value == "archived" and current_conv is not None and current_conv.get("id") == conv_id:
+                open_chat_conversation(None)
+            else:
+                push_sidebar_rows()
+        elif op == "sidebar_delete":
+            conv_id = str(payload)
+            store.delete_conversation(conv_id)
+            if current_conv is not None and current_conv.get("id") == conv_id:
+                open_chat_conversation(None)
+            else:
+                push_sidebar_rows()
+        elif op == "sidebar_convert":
+            conv_id, target_dir = payload
+            convert_chat_to_code(str(conv_id), str(target_dir))
+        elif op == "sidebar_archived":
+            sidebar_archived = bool(payload)
+            push_sidebar_rows()
+        else:
+            log_debug(f"[CHAT] Unknown op: {op}")
+
+    service.on_chat_event(
+        lambda op, payload: root.after(0, lambda: handle_chat_event(op, payload))
+    )
+    window_cfg = load_app_config()
+    # Create the window (hidden) before any content ops: the service drops
+    # every op until "open" has built it. Content first, then show + focus.
+    service.open_chat_window({
+        "palette": colors,
+        "lang": lang,
+        "title": f"{APP_NAME} {APP_VERSION}",
+        "header": get_text("mode_chat", lang),
+        "opacity": float(window_cfg.get("window_opacity") or 0.93),
+        "maximize_opaque": bool(window_cfg.get("maximize_opaque", True)),
+    })
     recent_chats = store.list_conversations("chat")
     if recent_chats:
         apply_chat_conversation(recent_chats[0])
     else:
         start_new_chat()
         add_message("GD", f"{get_text('welcome_msg', lang)} (Model: {model})")
-    message_box.focus_set()
+    service.chat_op("show")
+    service.chat_op("focus_input")
     root.mainloop()
 
 def friendly_error(error: Exception) -> str:
@@ -2230,35 +2006,79 @@ def main() -> int:
     personality = app_config.get("personality", DEFAULT_PERSONALITY)
 
     if not api_key or arguments.firstboot:
-        lang_res = run_setup_wizard_lang()
-        if not lang_res: return 2
-        lang = lang_res
+        # Qt wizard is the primary path; the legacy Tk steps remain only as
+        # the fallback when the Qt layer is unavailable (migration rule).
+        wizard_data: dict | None = None
+        qt_wizard_ok = False
+        try:
+            wizard_service = get_qt_service()
+            if wizard_service is not None:
+                from gd_core.voice import get_input_devices
 
-        theme_res = run_setup_wizard_theme(lang)
-        if theme_res is None: return 2
-        theme = theme_res
+                wizard_data = wizard_service.run_wizard({
+                    "language": lang,
+                    "theme": theme,
+                    "model": model,
+                    "code_model": app_config.get("code_model", DEFAULT_CODE_MODEL),
+                    "share_chat_code_model": app_config.get("share_chat_code_model", True),
+                    "hotkey": hotkey,
+                    "models": list(COMMON_GEMINI_MODELS),
+                    "mic_devices": list(get_input_devices()),
+                    "voice_device": app_config.get("voice_device"),
+                    "personality": personality,
+                    "window_opacity": app_config.get("window_opacity", 0.93),
+                })
+                qt_wizard_ok = True
+        except Exception as error:
+            log_debug(f"[QT] wizard failed: {error}")
 
-        step1_res = run_setup_wizard_step1(lang, theme)
-        if not step1_res: return 2
-        api_key, model, code_model, share_models = step1_res
+        if not qt_wizard_ok:
+            lang_res = run_setup_wizard_lang()
+            if not lang_res: return 2
+            lang = lang_res
+
+            theme_res = run_setup_wizard_theme(lang)
+            if theme_res is None: return 2
+            theme = theme_res
+
+            step1_res = run_setup_wizard_step1(lang, theme)
+            if not step1_res: return 2
+            api_key, model, code_model, share_models = step1_res
+            save_api_key(api_key)
+
+            step2_res = run_setup_wizard_step2(lang, theme)
+            if not step2_res: return 2
+            hotkey, voice_device = step2_res
+
+            pers_res = run_setup_wizard_step3(lang, theme)
+            if pers_res is None: return 2
+            personality = pers_res
+            wizard_data = {
+                "language": lang, "theme": theme, "window_opacity": 0.93,
+                "api_key": api_key, "model": model, "code_model": code_model,
+                "share_chat_code_model": share_models, "hotkey": hotkey,
+                "voice_device": voice_device, "personality": personality,
+            }
+        elif wizard_data is None:
+            return 2
+
+        lang = wizard_data["language"]
+        theme = wizard_data["theme"]
+        api_key = wizard_data["api_key"]
+        model = wizard_data["model"]
+        hotkey = wizard_data["hotkey"]
+        personality = wizard_data["personality"]
         save_api_key(api_key)
-
-        step2_res = run_setup_wizard_step2(lang, theme)
-        if not step2_res: return 2
-        hotkey, voice_device = step2_res
-
-        pers_res = run_setup_wizard_step3(lang, theme)
-        if pers_res is None: return 2
-        personality = pers_res
 
         save_app_config({
             "model": model,
-            "code_model": code_model,
-            "share_chat_code_model": share_models,
+            "code_model": wizard_data["code_model"],
+            "share_chat_code_model": wizard_data["share_chat_code_model"],
             "theme": theme,
-            "voice_device": voice_device,
+            "voice_device": wizard_data["voice_device"],
             "hotkey": hotkey,
             "language": lang,
+            "window_opacity": wizard_data.get("window_opacity", 0.93),
             "personality": personality
         })
 
@@ -2303,6 +2123,16 @@ def main() -> int:
         def open_gui_safely():
             log_debug("[HOTKEY] Open hotkey fired")
             global _active_root, _active_hwnd
+            service = get_qt_service()
+            if service is not None:
+                if service.chat_raise():
+                    return
+                if _ui_mode != "code":
+                    service.chat_op("show")
+                    return
+                if _active_hwnd:
+                    bring_to_foreground(_active_hwnd)
+                    return
             if _active_root is not None:
                 try:
                     _active_root.deiconify()
@@ -2331,4 +2161,10 @@ def main() -> int:
 
 if __name__ == "__main__":
     multiprocessing.freeze_support()
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except KeyboardInterrupt:
+        # Ctrl+C / IDE Stop: hard-exit like the tray Quit. Normal teardown
+        # fires the native hotkey/tray callbacks mid-finalization -> 0xC000041D.
+        cleanup_temp_files()
+        os._exit(0)
