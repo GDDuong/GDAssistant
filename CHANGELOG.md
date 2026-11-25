@@ -2,6 +2,14 @@
 
 All notable changes to GD Assistant are documented here.
 
+## Unreleased
+
+### Highlights
+
+- **Code Mode 2.0** — a project-aware coding workspace with an explorer, syntax-highlighted editor, reviewable diffs and undo, streaming terminals, visible task plans, resumable checkpoints, configurable permissions, and first-class Minecraft mod inspection/build commands.
+
+---
+
 ## v0.5.3-BETA
 
 ### Highlights

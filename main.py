@@ -470,6 +470,8 @@ def _read_json_dict(path: Path) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 def load_app_config() -> dict[str, Any]:
+    from gd_core.code_settings import normalize_code_settings
+
     config = {
         "model": DEFAULT_MODEL,
         "code_model": DEFAULT_CODE_MODEL,
@@ -485,6 +487,7 @@ def load_app_config() -> dict[str, Any]:
         "personality": DEFAULT_PERSONALITY
     }
     config.update(_read_json_dict(CONFIG_PATH))
+    config["code_mode"] = normalize_code_settings(config.get("code_mode"))
     return config
 
 def save_app_config(config_data: dict[str, Any]) -> None:
@@ -1119,7 +1122,7 @@ def launch_chat_ui(
         settings_win = tk.Toplevel(root)
         settings_win.title(get_text("settings_title", lang))
         settings_win.resizable(False, False)
-        settings_win.geometry("700x440")
+        settings_win.geometry("720x620")
         settings_win.configure(bg=colors["background"])
         settings_win.transient(root)
         settings_win.grab_set()
@@ -1183,6 +1186,7 @@ def launch_chat_ui(
             ("voice", get_text("settings_tab_voice", lang)),
             ("appearance", get_text("settings_tab_appearance", lang)),
             ("personality", get_text("settings_tab_personality", lang)),
+            ("code", get_text("settings_tab_code", lang)),
         )
         pages: dict[str, tk.Frame] = {name: tk.Frame(content, bg=colors["background"]) for name, _ in categories}
         rail_items: dict[str, tk.Label] = {}
@@ -1358,6 +1362,70 @@ def launch_chat_ui(
         pers_text.insert("1.0", app_cfg.get("personality", ""))
         pers_text.pack(anchor="w", pady=(3, 0))
 
+        # --- Code Mode ------------------------------------------------------
+        code_page = pages["code"]
+        code_cfg = app_cfg.get("code_mode") or {}
+        section_label(code_page, get_text("code_default_project", lang))
+        default_dir_row = tk.Frame(code_page, bg=colors["background"])
+        default_dir_row.pack(anchor="w", fill=tk.X, pady=(3, 8))
+        default_project_entry = tk.Entry(default_dir_row, width=42, **entry_options)
+        default_project_entry.insert(0, code_cfg.get("default_project_dir") or os.getcwd())
+        default_project_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 6))
+
+        def browse_default_project():
+            chosen = filedialog.askdirectory(parent=settings_win, title=get_text("code_select_workspace", lang))
+            if chosen:
+                default_project_entry.delete(0, tk.END)
+                default_project_entry.insert(0, chosen)
+
+        tk.Button(default_dir_row, text=get_text("code_browse", lang), command=browse_default_project, bg=colors["button"], fg=colors["foreground"], activebackground=colors["button_active"], activeforeground=colors["foreground"], relief=tk.FLAT, bd=0, padx=8).pack(side=tk.LEFT)
+
+        section_label(code_page, get_text("code_permission_mode", lang))
+        permission_var = tk.StringVar(value=code_cfg.get("permission_mode") or "project_autonomous")
+        permission_combo = ttk.Combobox(code_page, width=58, textvariable=permission_var, state="readonly", values=("supervised", "project_autonomous", "advanced"), style="GDAssistant.TCombobox")
+        permission_combo.pack(anchor="w", pady=(3, 8))
+
+        numeric_row = tk.Frame(code_page, bg=colors["background"])
+        numeric_row.pack(anchor="w", fill=tk.X, pady=(0, 8))
+        for column, (label_key, key, default) in enumerate((
+            ("code_max_iterations", "max_iterations", 20),
+            ("code_command_timeout", "command_timeout", 120),
+            ("code_checkpoint_retention", "checkpoint_retention", 20),
+            ("code_editor_font", "editor_font_size", 11),
+            ("code_tab_size", "tab_size", 4),
+        )):
+            cell = tk.Frame(numeric_row, bg=colors["background"])
+            cell.grid(row=0, column=column, padx=(0, 10), sticky="w")
+            tk.Label(cell, text=get_text(label_key, lang), bg=colors["background"], fg=colors["foreground"], font=("Arial", 8), wraplength=110, justify=tk.LEFT).pack(anchor="w")
+            value = tk.StringVar(value=str(code_cfg.get(key, default)))
+            ttk.Spinbox(cell, from_=1, to=3600, textvariable=value, width=8, style="GDAssistant.TCombobox").pack(anchor="w", pady=(2, 0))
+            numeric_row.grid_columnconfigure(column, weight=1)
+            if key == "max_iterations":
+                iterations_var = value
+            elif key == "command_timeout":
+                timeout_var = value
+            elif key == "checkpoint_retention":
+                retention_var = value
+            elif key == "editor_font_size":
+                font_var = value
+            else:
+                tab_var = value
+
+        auto_index_var = tk.BooleanVar(value=bool(code_cfg.get("auto_index", True)))
+        dependencies_var = tk.BooleanVar(value=bool(code_cfg.get("allow_dependency_install", True)))
+        tk.Checkbutton(code_page, text=get_text("code_auto_index", lang), variable=auto_index_var, **check_options).pack(anchor="w")
+        tk.Checkbutton(code_page, text=get_text("code_allow_dependencies", lang), variable=dependencies_var, **check_options).pack(anchor="w", pady=(0, 8))
+
+        section_label(code_page, get_text("code_ignored_dirs", lang))
+        ignored_text = tk.Text(code_page, height=4, width=70, bg=colors["input"], fg=colors["foreground"], insertbackground=colors["foreground"], bd=0, highlightthickness=1, highlightbackground=colors["border"], font=("Consolas", 9))
+        ignored_text.insert("1.0", "\n".join(code_cfg.get("ignored_dirs") or []))
+        ignored_text.pack(anchor="w", pady=(3, 8))
+
+        section_label(code_page, get_text("code_approved_patterns", lang))
+        approved_text = tk.Text(code_page, height=3, width=70, bg=colors["input"], fg=colors["foreground"], insertbackground=colors["foreground"], bd=0, highlightthickness=1, highlightbackground=colors["border"], font=("Consolas", 9))
+        approved_text.insert("1.0", "\n".join(code_cfg.get("approved_patterns") or []))
+        approved_text.pack(anchor="w", pady=(3, 0))
+
         footer = tk.Frame(settings_win, bg=colors["background"])
         footer.pack(fill=tk.X, padx=16, pady=(6, 14))
 
@@ -1366,6 +1434,23 @@ def launch_chat_ui(
             new_key = key_entry.get().strip()
             if not new_key:
                 messagebox.showerror("Error", get_text("err_empty_key", lang), parent=settings_win)
+                return
+            try:
+                new_code_mode = {
+                    "permission_mode": permission_var.get(),
+                    "max_iterations": int(iterations_var.get()),
+                    "command_timeout": int(timeout_var.get()),
+                    "checkpoint_retention": int(retention_var.get()),
+                    "editor_font_size": int(font_var.get()),
+                    "tab_size": int(tab_var.get()),
+                    "auto_index": auto_index_var.get(),
+                    "allow_dependency_install": dependencies_var.get(),
+                    "ignored_dirs": [line.strip() for line in ignored_text.get("1.0", tk.END).splitlines() if line.strip()],
+                    "approved_patterns": [line.strip() for line in approved_text.get("1.0", tk.END).splitlines() if line.strip()],
+                    "default_project_dir": default_project_entry.get().strip() or os.getcwd(),
+                }
+            except ValueError:
+                messagebox.showerror(get_text("settings_title", lang), get_text("code_settings_invalid", lang), parent=settings_win)
                 return
             new_hotkeys = {
                 action: hotkey_fields[action].get().strip() or default_value
@@ -1398,6 +1483,7 @@ def launch_chat_ui(
                 "wake_phrase": wake_entry.get().strip() or DEFAULT_WAKE_PHRASE,
                 "personality": pers_text.get("1.0", tk.END).strip(),
                 "language": lang_var.get(),
+                "code_mode": new_code_mode,
             })
             from gd_core.voice import set_voice_input_device
 
@@ -1986,16 +2072,19 @@ def launch_chat_ui(
 
             current_config = load_app_config()
             code_model = get_code_model(current_config, model)
+            code_settings = current_config.get("code_mode") or {}
             code_panel = CodeAgentPanel(
                 root,
                 client,
                 model=code_model,
-                start_dir=os.getcwd(),
+                start_dir=code_settings.get("default_project_dir") or os.getcwd(),
                 theme=theme,
                 debug=DEBUG_CONSOLE,
                 lang=lang,
                 conversation_id=conversation_id,
+                settings=code_settings,
             )
+            code_panel.bind("<<CodeSettings>>", lambda _e: open_settings_dialog())
         elif conversation_id:
             code_panel.load_conversation(conversation_id)
         code_panel.pack(fill=tk.BOTH, expand=True)
@@ -2191,6 +2280,7 @@ def main() -> int:
                 theme=theme,
                 debug=DEBUG_CONSOLE,
                 lang=lang,
+                settings=app_config.get("code_mode"),
             )
             return 0
         else:
@@ -2201,6 +2291,7 @@ def main() -> int:
                 start_dir=arguments.workspace,
                 debug=DEBUG_CONSOLE,
                 lang=lang,
+                settings=app_config.get("code_mode"),
             )
             return 0
 

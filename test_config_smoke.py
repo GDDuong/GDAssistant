@@ -19,7 +19,7 @@ import main
 CONFIG_KEYS = {
     "model", "code_model", "share_chat_code_model", "theme", "hotkey",
     "hotkey_voice", "hotkey_code", "language", "voice_device",
-    "wake_word_enabled", "wake_phrase", "personality",
+    "wake_word_enabled", "wake_phrase", "personality", "code_mode",
 }
 
 

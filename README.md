@@ -27,24 +27,56 @@ The default Windows interface includes a conversation view, text input, a voice 
 
 ### Code Mode
 
-Code Mode is a workspace-focused coding assistant. In the GUI, select **Mode → Code**. The agent can inspect project files, make precise edits, create files, search code, and run development commands from the selected workspace.
+Code Mode is a lightweight project-aware coding environment. Select **Mode → Code**, choose a project directory, and describe a task in natural language. The agent can inspect the project, create a visible plan, edit multiple files, run builds/tests, investigate real failures, and verify its changes.
 
-For a terminal-oriented workflow, start Code CLI:
+The interface includes:
 
-```powershell
-python main.py --code
-```
+- **Project Explorer** with folder tree, filename search, recent files, and project switching.
+- **Editor** with line numbers, lightweight syntax highlighting, safe save, and revert.
+- **Changes** with unified diffs, per-change accept/reject, and undo that refuses to overwrite external edits.
+- **Terminal dock** with live stdout/stderr, exit status, Stop, multiple sessions, timeouts, and permission checks.
+- **Plan / Overview / Agent Activity** showing progress, detected tooling, commands, files, and errors.
+- **Checkpoints** so `/continue` can resume interrupted work.
 
-Useful Code CLI commands:
+Code Mode is language-agnostic. It detects common Python, Node, Java/Gradle/Maven, Rust, Go, .NET, C/C++, CMake, Flutter, PHP, Ruby, and other projects from their real manifests and files.
+
+#### Minecraft mod development
+
+Opening a Fabric, Forge, NeoForge, or Quilt project produces a verified profile with Minecraft version, loader, Java toolchain, mappings, mod ID, dependencies, entrypoints, and source/resource directories. These commands perform real actions:
 
 ```text
-/cd <path>                   Change the active workspace
-/status                      Show the current workspace and model
-/model <Gemini model name>   Change the active model for this CLI session
-/exit                        Leave Code CLI
+/mod-info       Show the detected mod profile
+/mod-build      Run the detected Gradle build task
+/mod-test       Run the detected Gradle test task
+/mod-run        Run the detected development client
+/mod-debug      Investigate a mod error and rebuild
+/mod-deps       Inspect declared dependencies
+/mod-mappings   Inspect mappings and versions
+/mod-audit      Check metadata and compatibility
 ```
 
-> **Important:** Code Mode can edit files and run development commands inside its chosen workspace. Only use it with projects and folders you trust.
+#### Slash commands
+
+```text
+/plan <request>   Create a visible implementation plan
+/status           Show workspace, plan, modified files, and terminals
+/context          Show project detection and index summary
+/continue         Resume the latest interrupted checkpoint
+/explain <scope>  Explain code read-only
+/review <scope>   Review code read-only
+/audit <scope>    Audit the project read-only
+/refactor <scope> Refactor and verify
+/debug <scope>    Investigate, fix, and verify errors
+/stop             Stop the agent and running terminal processes
+```
+
+For a terminal-oriented workflow:
+
+```powershell
+python main.py --code --workspace "C:\path\to\project"
+```
+
+> **Safety:** model tools are restricted to the selected workspace and optional read-only reference directories. Sensitive files such as `.env`, private keys, and credential files are blocked from model tools. File changes are snapshotted before overwriting. Supervised mode asks before every write/command; Project Autonomous allows routine project work but asks for destructive or privileged operations. GD Assistant never commits, pushes, or elevates privileges without explicit authorization.
 
 ### Other launch options
 
@@ -79,6 +111,7 @@ In **File → Settings**, you can:
 - Set a separate Code model when shared models are turned off.
 - Choose **Dark** or **Light** appearance.
 - Set the global hotkey, language, and assistant personality.
+- Configure **Code Mode** project defaults, permission mode, iteration/time limits, ignored directories, indexing, checkpoint retention, dependency installation, terminal behavior, and editor preferences.
 
 The Code CLI can also temporarily switch models with `/model <name>` without changing your saved settings.
 
@@ -207,6 +240,17 @@ The finished installer is created at:
 ```text
 installer\Output\GD_Assistant-v0.6-BETA-WebSetup.exe
 ```
+
+## Tests
+
+Run the headless compatibility and Code Mode suites:
+
+```powershell
+python test_config_smoke.py
+python test_code_mode.py
+```
+
+The Code Mode suite uses temporary projects for workspace-boundary, snapshot/undo, terminal, project-detection, Minecraft-profile, agent-loop, checkpoint, and IDE smoke checks.
 
 ## Project Status
 
