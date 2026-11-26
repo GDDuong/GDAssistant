@@ -27,6 +27,7 @@ class ConversationSidebar(tk.Frame):
         lang: str,
         on_open: Callable[[str | None], None] | None = None,
         on_new: Callable[[], None] | None = None,
+        on_new_chat: Callable[[], None] | None = None,
         on_convert: Callable[[str], None] | None = None,
     ) -> None:
         super().__init__(master, bg=palette["panel"], width=216, bd=0)
@@ -37,6 +38,7 @@ class ConversationSidebar(tk.Frame):
         self.palette = palette
         self.on_open = on_open
         self.on_new = on_new
+        self.on_new_chat = on_new_chat
         self.on_convert = on_convert
         self.current_id: str | None = None
         self.expanded = True
@@ -86,6 +88,20 @@ class ConversationSidebar(tk.Frame):
             pady=4,
         )
         self.new_btn.pack(fill=tk.X)
+        if self.kind == "code" and self.on_new_chat:
+            self.new_chat_btn = tk.Button(
+                top_row,
+                text=self._text("code_new_chat"),
+                command=self._handle_new_chat,
+                relief=tk.FLAT,
+                bg=palette["button"],
+                fg=palette["foreground"],
+                activebackground=palette["button_active"],
+                activeforeground=palette["foreground"],
+                font=("Segoe UI", 9),
+                pady=4,
+            )
+            self.new_chat_btn.pack(fill=tk.X, pady=(4, 0))
 
         tk.Frame(self.content, bg=palette["border"], height=1).pack(fill=tk.X, padx=6)
 
@@ -154,11 +170,34 @@ class ConversationSidebar(tk.Frame):
         conversations = self.store.list_conversations(
             self.kind, include_archived=self.show_archived_var.get()
         )
-        self.ids = [conv["id"] for conv in conversations]
         suffix = self._text("sidebar_archived_suffix")
+        rows: list[tuple[dict[str, Any], str]] = []
+        if self.kind == "code":
+            by_id = {conv["id"]: conv for conv in conversations}
+            children: dict[str, list[dict[str, Any]]] = {}
+            loose: list[dict[str, Any]] = []
+            roots: list[dict[str, Any]] = []
+            for conv in conversations:
+                parent_id = str(conv.get("project_id") or "")
+                if parent_id:
+                    children.setdefault(parent_id, []).append(conv)
+                elif conv.get("is_project") or "is_project" not in conv:
+                    roots.append(conv)
+                else:
+                    loose.append(conv)
+            for root in roots:
+                rows.append((root, str(root.get("title") or "...")))
+                for child in children.get(root["id"], []):
+                    rows.append((child, "    ↳ " + str(child.get("title") or "...")))
+            for parent_id, items in children.items():
+                if parent_id not in by_id:
+                    rows.extend((child, "    ↳ " + str(child.get("title") or "...")) for child in items)
+            rows.extend((conv, str(conv.get("title") or "...")) for conv in loose)
+        else:
+            rows = [(conv, str(conv.get("title") or "...")) for conv in conversations]
+        self.ids = [conv["id"] for conv, _label in rows]
         self.listbox.delete(0, tk.END)
-        for conv in conversations:
-            label = str(conv.get("title") or "...")
+        for conv, label in rows:
             if conv.get("status") == "archived":
                 label += suffix
             self.listbox.insert(tk.END, label)
@@ -175,6 +214,10 @@ class ConversationSidebar(tk.Frame):
     def _handle_new(self) -> None:
         if self.on_new:
             self.on_new()
+
+    def _handle_new_chat(self) -> None:
+        if self.on_new_chat:
+            self.on_new_chat()
 
     def _on_select(self, _event: Any = None) -> None:
         if self._loading:
@@ -252,6 +295,13 @@ class ConversationSidebar(tk.Frame):
             bg=palette["accent"],
             activebackground=palette["accent_active"],
         )
+        if hasattr(self, "new_chat_btn"):
+            self.new_chat_btn.configure(
+                bg=palette["button"],
+                fg=palette["foreground"],
+                activebackground=palette["button_active"],
+                activeforeground=palette["foreground"],
+            )
         self.section_label.configure(bg=palette["panel"], fg=palette["muted"])
         self.listbox.configure(
             bg=palette["input"],
@@ -289,7 +339,13 @@ class ConversationSidebar(tk.Frame):
         self.refresh()
 
     def _delete(self, conv_id: str) -> None:
-        confirm_key = "delete_project_confirm" if self.kind == "code" else "delete_chat_confirm"
+        conv = self._context_for(conv_id) or {}
+        is_project = (
+            self.kind == "code"
+            and not conv.get("project_id")
+            and (conv.get("is_project") or "is_project" not in conv)
+        )
+        confirm_key = "delete_code_project_confirm" if is_project else "delete_project_confirm" if self.kind == "code" else "delete_chat_confirm"
         confirmed = messagebox.askyesno(
             self._text("ctx_delete"),
             self._text(confirm_key),
@@ -297,8 +353,12 @@ class ConversationSidebar(tk.Frame):
         )
         if not confirmed:
             return
-        self.store.delete_conversation(conv_id)
-        if conv_id == self.current_id:
+        current = self.store.load_conversation(self.current_id) if self.current_id else None
+        if is_project:
+            self.store.delete_project(conv_id)
+        else:
+            self.store.delete_conversation(conv_id)
+        if current and (current["id"] == conv_id or (is_project and current.get("project_id") == conv_id)):
             self.current_id = None
             self.refresh()
             if self.on_open:

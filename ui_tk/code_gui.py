@@ -10,20 +10,23 @@ import threading
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
-from typing import Any
+from typing import Any, Callable
 
 from gd_core.attachments import display_summary, load_binary_parts, prepare_message
 from gd_core.code_agent import CodeAgentSession
 from gd_core.code_commands import CodeCommandRouter
-from gd_core.code_settings import normalize_code_settings
+from gd_core.code_settings import PERMISSION_LABEL_KEYS, normalize_code_settings, permission_mode_from_label, permission_mode_label, permission_mode_options
 from gd_core.coding_tools import configure_code_mode, get_registry, get_terminal_manager, set_extra_dirs
 from gd_core.conversations import ConversationStore
 from gd_core.project import inspect_project
 from gd_core.task_state import CheckpointStore, TaskPlan
 from gd_core.translations import get_text
 from ui_tk.attach_strip import AttachStrip
-from ui_tk.mdrender import configure_tags, insert_markdown
+from ui_tk.mdrender import configure_tags, insert_markdown, insert_mentions
+from ui_tk.sidebar import ConversationSidebar
+from ui_tk.skill_dialog import SkillAutocomplete, SkillDialog
 from ui_tk.themes import get_theme
+from ui_tk.tooltip import NotebookTooltips, Tooltip
 
 
 def _button(parent, text, command, colors, **kwargs):
@@ -257,18 +260,21 @@ class TerminalPane(tk.Frame):
 
 
 class CodeAgentPanel(tk.Frame):
-    def __init__(self, parent, client, model="gemini-3.5-flash-lite", start_dir=".", theme="dark", debug=False, lang="en", conversation_id=None, store=None, settings=None):
+    def __init__(self, parent, client, model="gemini-3.5-flash-lite", start_dir=None, theme="dark", debug=False, lang="en", conversation_id=None, store=None, settings=None, on_settings_change: Callable[[dict[str, Any]], None] | None = None):
         self.colors = get_theme(theme)
         super().__init__(parent, bg=self.colors["background"])
         self.client = client
+        self.start_dir = Path(start_dir).expanduser() if start_dir else None
         self.model = model
         self.theme = theme
         self.debug = debug
         self.lang = lang
         self.store = store or ConversationStore()
         self.settings = normalize_code_settings(settings)
+        self.on_settings_change = on_settings_change
         self.conv: dict[str, Any] | None = None
         self.extra_dirs: list[str] = []
+        self.active_skills: list[str] = []
         self.pending_files: list[Path] = []
         self.is_busy = False
         self.stop_event: threading.Event | None = None
@@ -282,8 +288,10 @@ class CodeAgentPanel(tk.Frame):
         self.terminals = get_terminal_manager()
         self.terminal_panes: dict[str, TerminalPane] = {}
         self.editor_path: Path | None = None
-        self._explorer_visible = True
-        self._activity_visible = True
+        self._explorer_visible = bool(self.settings.get("explorer_visible", True))
+        self._activity_visible = bool(self.settings.get("activity_visible", True))
+        self._terminal_expanded = bool(self.settings.get("terminal_expanded", True))
+        self._syncing_permission = False
         self._init_conversation(conversation_id)
         self._build_ui()
         self._refresh_all()
@@ -294,18 +302,39 @@ class CodeAgentPanel(tk.Frame):
             return
         if getattr(self, "terminals", None):
             self.terminals.stop_all()
+        if getattr(self, "skill_autocomplete", None):
+            self.skill_autocomplete.hide()
 
     def _text(self, key):
         return get_text(key, self.lang)
+
+    def _permission_owner(self):
+        if not self.conv:
+            return None
+        project_id = str(self.conv.get("project_id") or "")
+        if project_id:
+            project = self.store.load_conversation(project_id)
+            if project is not None:
+                return project
+        return self.conv
+
+    def _permission_mode(self):
+        mode = str((self._permission_owner() or {}).get("permission_mode") or self.settings.get("permission_mode") or "project_autonomous")
+        return mode if mode in PERMISSION_LABEL_KEYS else "project_autonomous"
 
     def _configure_session(self):
         workspace = str(self.conv.get("workspace") or self.settings.get("default_project_dir") or os.getcwd()) if self.conv else os.getcwd()
         if not Path(workspace).is_dir():
             workspace = os.getcwd()
-        self.checkpoints = CheckpointStore(workspace, self.settings.get("checkpoint_retention", 20))
+        session_settings = {**self.settings, "permission_mode": self._permission_mode()}
+        owner = self._permission_owner()
+        if owner is not None and not owner.get("permission_mode"):
+            owner["permission_mode"] = session_settings["permission_mode"]
+            self.store.save_conversation(owner)
+        self.checkpoints = CheckpointStore(workspace, session_settings.get("checkpoint_retention", 20))
         set_extra_dirs(self.extra_dirs)
         self.context = configure_code_mode(
-            workspace, self.settings, approval_callback=self.request_approval,
+            workspace, session_settings, approval_callback=self.request_approval,
             event_callback=self._queue_core_event, task_id=self.conv["id"] if self.conv else "project",
             checkpoints=self.checkpoints, plan=self.plan,
         )
@@ -313,10 +342,10 @@ class CodeAgentPanel(tk.Frame):
         self.terminals = self.context.terminals
         self.session = CodeAgentSession(
             self.client, model=self.model, on_status=self.on_agent_status, debug=self.debug,
-            extra_dirs=self.extra_dirs, settings=self.settings, registry=self.registry,
+            extra_dirs=self.extra_dirs, settings=session_settings, registry=self.registry,
             context=self.context, on_event=self._queue_core_event, task_id=self.context.task_id,
             checkpoints=self.checkpoints, plan=self.plan, approval_callback=self.request_approval,
-            seed_messages=(self.conv or {}).get("messages") or [],
+            seed_messages=(self.conv or {}).get("messages") or [], skills=self.active_skills,
         )
         self.router = CodeCommandRouter(self.session, self.lang)
 
@@ -326,27 +355,71 @@ class CodeAgentPanel(tk.Frame):
             if conv is not None:
                 self._set_conversation(conv)
                 return
+        if self.start_dir and self.start_dir.is_dir():
+            workspace = str(self.start_dir.resolve())
+            for conv in self.store.list_conversations("code"):
+                if conv.get("workspace") and Path(conv["workspace"]).resolve() == Path(workspace):
+                    self._set_conversation(conv)
+                    return
+            conv = self.store.create_conversation(
+                "code", title=Path(workspace).name or self._text("sidebar_new_project"),
+                workspace=workspace, is_project=True,
+            )
+            conv["permission_mode"] = self.settings.get("permission_mode", "project_autonomous")
+            self.store.save_conversation(conv)
+            self._set_conversation(conv)
+            return
         recent = self.store.list_conversations("code")
         if recent:
             self._set_conversation(recent[0])
         else:
-            conv = self.store.create_conversation("code", title=self._text("sidebar_new_project"), workspace=self.settings.get("default_project_dir") or os.getcwd())
+            workspace = str(self.start_dir.resolve()) if self.start_dir and self.start_dir.is_dir() else ""
+            title = Path(workspace).name if workspace else self._text("code_new_chat")
+            conv = self.store.create_conversation("code", title=title, workspace=workspace, is_project=bool(workspace))
+            conv["permission_mode"] = self.settings.get("permission_mode", "project_autonomous")
+            self.store.save_conversation(conv)
             self._set_conversation(conv)
 
     def _set_conversation(self, conv):
         self.conv = conv
         self.extra_dirs = [str(path) for path in conv.get("extra_dirs") or []]
+        self.active_skills = [str(item) for item in conv.get("skills") or []]
         self.plan = TaskPlan()
         self._configure_session()
+        if hasattr(self, "sidebar"):
+            self.sidebar.set_current(conv["id"])
+            self._refresh_skill_button()
+            self._sync_permission_mode()
+
+    def _sync_permission_mode(self):
+        if not hasattr(self, "permission_combo"):
+            return
+        mode = self._permission_mode()
+        label = permission_mode_label(mode, self.lang)
+        options = permission_mode_options(self.lang)
+        self._syncing_permission = True
+        try:
+            self.permission_var.set(label)
+            self.permission_combo.current(options.index(label))
+        finally:
+            self._syncing_permission = False
 
     def _build_ui(self):
         color = self.colors
         self._build_topbar()
         body = tk.Frame(self, bg=color["background"])
         body.pack(fill=tk.BOTH, expand=True)
+        self.sidebar = ConversationSidebar(
+            body, self.store, "code", color, self.lang,
+            on_open=self.load_conversation,
+            on_new=self.on_new_project,
+            on_new_chat=self.on_new_chat,
+        )
+        self.sidebar.pack(side=tk.LEFT, fill=tk.Y)
         self.explorer = self._build_explorer(body)
-        self.explorer.pack(side=tk.LEFT, fill=tk.Y)
-        self.explorer_toggle = _button(body, "»", self.toggle_explorer, color, width=3)
+        if self._explorer_visible:
+            self.explorer.pack(side=tk.LEFT, fill=tk.Y)
+        self.explorer_toggle = _button(body, "«" if self._explorer_visible else "»", self.toggle_explorer, color, width=3)
         self.explorer_toggle.pack(side=tk.LEFT, fill=tk.Y)
         center = tk.Frame(body, bg=color["background"])
         center.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -358,8 +431,9 @@ class CodeAgentPanel(tk.Frame):
         self._build_terminal_dock(self.center_dock)
         self._build_input(center)
         self.activity = self._build_activity(body)
-        self.activity.pack(side=tk.RIGHT, fill=tk.Y)
-        self.activity_toggle = _button(body, "«", self.toggle_activity, color, width=3)
+        if self._activity_visible:
+            self.activity.pack(side=tk.RIGHT, fill=tk.Y)
+        self.activity_toggle = _button(body, "«" if self._activity_visible else "»", self.toggle_activity, color, width=3)
         self.activity_toggle.pack(side=tk.RIGHT, fill=tk.Y)
         self.status_var = tk.StringVar(value=self._text("code_ready"))
         tk.Label(self, textvariable=self.status_var, bg=color["accent"], fg="#ffffff", anchor="w", padx=8, pady=2, font=("Segoe UI", 8)).pack(fill=tk.X, side=tk.BOTTOM)
@@ -370,11 +444,19 @@ class CodeAgentPanel(tk.Frame):
         bar = tk.Frame(self, bg=color["panel"], padx=8, pady=6)
         bar.pack(fill=tk.X, side=tk.TOP)
         _accent_button(bar, self._text("code_browse"), self.on_browse_workspace, color).pack(side=tk.LEFT, padx=(0, 4))
-        self.project_label = tk.Label(bar, text="", bg=color["panel"], fg=color["foreground"], font=("Segoe UI", 10, "bold"), anchor="w")
+        self.project_label = tk.Label(bar, text="", bg=color["panel"], fg=color["foreground"], font=("Segoe UI", 10, "bold"), anchor="w", cursor="hand2")
         self.project_label.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=6)
+        self.project_label.bind("<Button-1>", lambda _e: self.on_browse_workspace())
+        Tooltip(self.project_label, self._project_tooltip)
         tk.Label(bar, text=f"{self._text('code_model')} {self.model}", bg=color["panel"], fg=color["muted"], font=("Segoe UI", 9)).pack(side=tk.LEFT, padx=8)
-        self.permission_var = tk.StringVar(value=self.settings.get("permission_mode", "project_autonomous"))
-        ttk.Combobox(bar, textvariable=self.permission_var, state="readonly", width=20, values=("supervised", "project_autonomous", "advanced")).pack(side=tk.LEFT, padx=4)
+        tk.Label(bar, text=self._text("code_permissions_label"), bg=color["panel"], fg=color["muted"], font=("Segoe UI", 9)).pack(side=tk.LEFT, padx=(8, 2))
+        mode = self._permission_mode()
+        mode_label = permission_mode_label(mode, self.lang)
+        mode_options = permission_mode_options(self.lang)
+        self.permission_var = tk.StringVar(value=mode_label)
+        self.permission_combo = ttk.Combobox(bar, textvariable=self.permission_var, state="readonly", width=38, values=mode_options)
+        self.permission_combo.pack(side=tk.LEFT, padx=4)
+        self.permission_combo.current(mode_options.index(mode_label))
         self.permission_var.trace_add("write", lambda *_: self._permission_changed())
         _button(bar, self._text("menu_settings"), self.on_open_settings, color).pack(side=tk.LEFT, padx=4)
 
@@ -411,6 +493,11 @@ class CodeAgentPanel(tk.Frame):
         self.tabs.pack(fill=tk.BOTH, expand=True)
         self.agent_tab = tk.Frame(self.tabs, bg=color["background"])
         self.tabs.add(self.agent_tab, text=self._text("code_agent_tab"))
+        self.quick_start = tk.Frame(self.agent_tab, bg=color["background"], padx=12, pady=12)
+        self.quick_start.pack(fill=tk.X)
+        _button(self.quick_start, self._text("code_choose_project"), self.on_new_project, color).pack(side=tk.LEFT, padx=(0, 6))
+        _button(self.quick_start, self._text("code_start_documents"), self.on_start_default_chat, color).pack(side=tk.LEFT, padx=(0, 6))
+        _button(self.quick_start, self._text("code_open_skills"), self.open_skills, color).pack(side=tk.LEFT)
         self.transcript = tk.Text(self.agent_tab, wrap=tk.WORD, bg=color["background"], fg=color["foreground"], insertbackground=color["foreground"], font=("Consolas", 10), padx=12, pady=12, bd=0, state=tk.DISABLED)
         self.transcript.pack(fill=tk.BOTH, expand=True)
         self.transcript.tag_configure("user", foreground=color["user"], font=("Consolas", 10, "bold"))
@@ -431,6 +518,25 @@ class CodeAgentPanel(tk.Frame):
         self.tabs.add(self.overview_tab, text=self._text("code_overview_tab"))
         self.overview_text = tk.Text(self.overview_tab, bg=color["background"], fg=color["foreground"], font=("Consolas", 10), wrap=tk.WORD, bd=0, padx=12, pady=12)
         self.overview_text.pack(fill=tk.BOTH, expand=True)
+        self.tab_tooltips = NotebookTooltips(self.tabs, [
+            self._text("code_tip_agent"), self._text("code_tip_editor"), self._text("code_tip_diff"),
+            self._text("code_tip_plan"), self._text("code_tip_overview"),
+        ])
+        self.tabs.bind("<<NotebookTabChanged>>", lambda _e: self._refresh_tab_badges())
+        self._refresh_tab_badges()
+
+    def _refresh_tab_badges(self):
+        selected = self.tabs.select()
+        changes = [change for change in self.context.workspace.tracker.changes if change.status not in {"rejected", "undone"}]
+        diff_text = self._text("code_diff_tab")
+        if changes and str(self.diff_tab) != selected:
+            diff_text += f" ({len(changes)})"
+        self.tabs.tab(self.diff_tab, text=diff_text)
+        data = self.plan.to_dict()
+        plan_text = self._text("code_plan_tab")
+        if data["steps"] and str(self.plan_tab) != selected:
+            plan_text += f" {data['completed']}/{data['total']}"
+        self.tabs.tab(self.plan_tab, text=plan_text)
 
     def _build_diff_tab(self):
         color = self.colors
@@ -448,6 +554,10 @@ class CodeAgentPanel(tk.Frame):
         self.change_tree.column("path", width=420)
         self.change_tree.pack(fill=tk.X, padx=6, pady=6)
         self.change_tree.bind("<<TreeviewSelect>>", self.show_selected_diff)
+        self.change_tree.tag_configure("pending", foreground=color["working"])
+        self.change_tree.tag_configure("accepted", foreground=color["user"])
+        self.change_tree.tag_configure("rejected", foreground=color["muted"])
+        self.change_tree.tag_configure("undone", foreground=color["muted"])
         self.diff_text = tk.Text(self.diff_tab, bg=color["background"], fg=color["foreground"], font=("Consolas", 9), wrap=tk.NONE, bd=0, padx=8, pady=8)
         self.diff_text.pack(fill=tk.BOTH, expand=True)
         self.diff_text.tag_configure("add", foreground=color["user"])
@@ -470,15 +580,41 @@ class CodeAgentPanel(tk.Frame):
 
     def _build_terminal_dock(self, parent):
         color = self.colors
-        dock = tk.Frame(parent, bg=color["panel"], height=210)
-        parent.add(dock, minsize=120, height=210)
-        header = tk.Frame(dock, bg=color["panel"])
+        self._terminal_height = 210
+        self.terminal_dock = tk.Frame(parent, bg=color["panel"], height=self._terminal_height if self._terminal_expanded else 36)
+        parent.add(self.terminal_dock, minsize=36, height=self._terminal_height if self._terminal_expanded else 36)
+        header = tk.Frame(self.terminal_dock, bg=color["panel"])
         header.pack(fill=tk.X)
-        tk.Label(header, text=self._text("code_terminal"), bg=color["panel"], fg=color["foreground"], font=("Segoe UI", 9, "bold"), padx=8, pady=4).pack(side=tk.LEFT)
+        self.terminal_status_var = tk.StringVar(value=self._text("code_terminal"))
+        tk.Label(header, textvariable=self.terminal_status_var, bg=color["panel"], fg=color["foreground"], font=("Segoe UI", 9, "bold"), padx=8, pady=4).pack(side=tk.LEFT)
+        self.terminal_collapse_btn = _button(header, "−" if self._terminal_expanded else "⌃", self.toggle_terminal, color, width=3)
+        self.terminal_collapse_btn.pack(side=tk.RIGHT, padx=(2, 4), pady=3)
+        Tooltip(self.terminal_collapse_btn, lambda: self._text("code_terminal_collapse" if self._terminal_expanded else "code_terminal_expand"))
         _button(header, "+ " + get_text("code_terminal", self.lang), self.new_terminal, color).pack(side=tk.RIGHT, padx=2, pady=3)
-        self.terminal_notebook = ttk.Notebook(dock)
+        self.terminal_body = tk.Frame(self.terminal_dock, bg=color["panel"])
+        if self._terminal_expanded:
+            self.terminal_body.pack(fill=tk.BOTH, expand=True)
+        self.terminal_notebook = ttk.Notebook(self.terminal_body)
         self.terminal_notebook.pack(fill=tk.BOTH, expand=True)
+        NotebookTooltips(self.terminal_notebook, [self._text("code_tip_terminal")] * 20)
         self.new_terminal()
+        self._refresh_terminal_status()
+
+    def _refresh_terminal_status(self):
+        running = sum(session.status == "running" for session in self.terminals.sessions.values())
+        self.terminal_status_var.set(self._text("code_terminal_running").format(count=running) if running else self._text("code_terminal"))
+
+    def toggle_terminal(self):
+        self._terminal_expanded = not self._terminal_expanded
+        if self._terminal_expanded:
+            self.terminal_body.pack(fill=tk.BOTH, expand=True)
+            self.center_dock.paneconfigure(self.terminal_dock, height=self._terminal_height)
+            self.terminal_collapse_btn.configure(text="−")
+        else:
+            self.terminal_body.pack_forget()
+            self.center_dock.paneconfigure(self.terminal_dock, height=36)
+            self.terminal_collapse_btn.configure(text="⌃")
+        self._save_ui_state()
 
     def _build_input(self, parent):
         color = self.colors
@@ -486,9 +622,14 @@ class CodeAgentPanel(tk.Frame):
         frame.pack(fill=tk.X, side=tk.BOTTOM)
         self.attach_btn = _button(frame, "+", self.on_attach_files, color, width=3, font=("Segoe UI", 11, "bold"))
         self.attach_btn.pack(side=tk.LEFT, padx=(0, 6))
+        self.skills_btn = _button(frame, self._text("skills_title"), self.open_skills, color)
+        self.skills_btn.pack(side=tk.LEFT, padx=(0, 6))
+        Tooltip(self.skills_btn, self._skill_tooltip_text)
+        self._refresh_skill_button()
         self.attach_strip = AttachStrip(frame, {**color, "background": color["panel"]}, clear_text=self._text("attach_clear"), on_remove=lambda index: self.remove_attachment(index), on_clear=self.clear_attachments)
         self.input_box = tk.Text(frame, height=3, bg=color["input"], fg=color["foreground"], insertbackground=color["foreground"], font=("Segoe UI", 10), padx=8, pady=6, bd=0, highlightthickness=1, highlightbackground=color["border"], highlightcolor=color["accent"])
         self.input_box.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 8))
+        self.skill_autocomplete = SkillAutocomplete(self.input_box, lambda: self.session.skill_manager.discover(), color)
         self.input_box.bind("<Return>", self.on_return_pressed)
         self.send_btn = _accent_button(frame, self._text("code_send"), self.submit_prompt, color, padx=18, pady=8, font=("Segoe UI", 10, "bold"))
         self.send_btn.pack(side=tk.RIGHT, fill=tk.Y)
@@ -525,16 +666,75 @@ class CodeAgentPanel(tk.Frame):
         style.configure("Treeview", background=color["input"], foreground=color["foreground"], fieldbackground=color["input"], bordercolor=color["border"], rowheight=22)
         style.map("Treeview", background=[("selected", color["accent"])], foreground=[("selected", "#ffffff")])
         style.configure("TCombobox", fieldbackground=color["input"], foreground=color["foreground"], background=color["button"], arrowcolor=color["foreground"])
+        style.map(
+            "TCombobox",
+            fieldbackground=[("readonly", color["input"]), ("disabled", color["panel"])],
+            foreground=[("readonly", color["foreground"]), ("disabled", color["muted"])],
+            background=[("readonly", color["button"])],
+            arrowcolor=[("readonly", color["foreground"])],
+            selectbackground=[("readonly", color["accent"])],
+            selectforeground=[("readonly", "#ffffff")],
+        )
+        self.option_add("*TCombobox*Listbox.background", color["input"])
+        self.option_add("*TCombobox*Listbox.foreground", color["foreground"])
+        self.option_add("*TCombobox*Listbox.selectBackground", color["accent"])
+        self.option_add("*TCombobox*Listbox.selectForeground", "#ffffff")
         style.configure("TProgressbar", background=color["accent"], troughcolor=color["input"], bordercolor=color["input"])
 
     def _permission_changed(self):
-        self.settings["permission_mode"] = self.permission_var.get()
+        if self._syncing_permission:
+            return
+        mode = permission_mode_from_label(self.permission_var.get(), self.lang)
+        owner = self._permission_owner()
+        if owner is not None:
+            owner["permission_mode"] = mode
+            self.store.save_conversation(owner)
         if self.context:
-            self.context.policy.mode = self.permission_var.get()
-        self._append_log(self._text("code_permission") + ": " + self.permission_var.get())
+            self.context.policy.mode = mode
+        if self.session:
+            self.session.rebuild_config()
+        self._append_log(self._text("code_permission") + ": " + permission_mode_label(mode, self.lang))
 
     def on_open_settings(self):
         self.event_generate("<<CodeSettings>>")
+
+    def _skill_tooltip_text(self):
+        names = [skill.name for skill in self.session.skill_manager.discover() if skill.id in self.active_skills]
+        return "\n".join(names) if names else self._text("skills_empty")
+
+    def _refresh_skill_button(self):
+        if hasattr(self, "skills_btn"):
+            active = bool(self.active_skills)
+            self.skills_btn.configure(
+                text=self._text("skills_count").format(count=len(self.active_skills)),
+                highlightbackground=self.colors["accent"] if active else self.colors["border"],
+                highlightcolor=self.colors["accent"],
+                highlightthickness=1 if active else 0,
+            )
+
+    def open_skills(self):
+        if self.is_busy:
+            self.status_var.set(self._text("code_busy_wait"))
+            return
+
+        def changed(active_ids):
+            self.active_skills = list(active_ids)
+            if self.conv:
+                self.conv["skills"] = list(active_ids)
+                self.store.save_conversation(self.conv)
+            self.session.set_skills(active_ids)
+            self._refresh_skill_button()
+
+        SkillDialog(self, self.context.workspace.root, self.active_skills, self.lang, changed, colors=self.colors)
+
+    def _save_ui_state(self):
+        self.settings.update({
+            "explorer_visible": self._explorer_visible,
+            "activity_visible": self._activity_visible,
+            "terminal_expanded": self._terminal_expanded,
+        })
+        if self.on_settings_change:
+            self.on_settings_change(dict(self.settings))
 
     def toggle_explorer(self):
         self._explorer_visible = not self._explorer_visible
@@ -544,6 +744,7 @@ class CodeAgentPanel(tk.Frame):
         else:
             self.explorer.pack_forget()
             self.explorer_toggle.configure(text="«")
+        self._save_ui_state()
 
     def toggle_activity(self):
         self._activity_visible = not self._activity_visible
@@ -553,6 +754,7 @@ class CodeAgentPanel(tk.Frame):
         else:
             self.activity.pack_forget()
             self.activity_toggle.configure(text="»")
+        self._save_ui_state()
 
     def new_terminal(self, session_id=None):
         pane = TerminalPane(self.terminal_notebook, self.terminal_notebook, self.terminals, self.context.workspace.root, self.context.policy, self.colors, self.lang, int(self.settings.get("command_timeout", 120)))
@@ -564,8 +766,20 @@ class CodeAgentPanel(tk.Frame):
 
     # ---------------------------------------------------------------- project
 
+    def _project_tooltip(self):
+        path = str(self.context.workspace.root)
+        if not (self.conv or {}).get("workspace"):
+            path += f"\n{self._text('code_default_workspace')}"
+        return path
+
     def _refresh_all(self):
-        self.project_label.configure(text=self.context.workspace.root.name)
+        workspace = self.context.workspace.root
+        if (self.conv or {}).get("workspace"):
+            self.project_label.configure(text=workspace.name)
+        else:
+            self.project_label.configure(text=f"{self._text('code_no_project')} — {workspace.name}")
+        self.sidebar.set_current((self.conv or {}).get("id"))
+        self._refresh_skill_button()
         self.populate_tree()
         self.refresh_overview()
         self.refresh_plan()
@@ -694,6 +908,18 @@ class CodeAgentPanel(tk.Frame):
         chosen = filedialog.askdirectory(initialdir=str(self.context.workspace.root), title=self._text("code_select_workspace"))
         if not chosen:
             return
+        project_id = str(self.conv.get("project_id") or "")
+        if not project_id and (self.conv.get("is_project") or "is_project" not in self.conv):
+            project_id = self.conv["id"]
+        if project_id:
+            project = self.store.load_conversation(project_id)
+            if project:
+                project["workspace"] = chosen
+                self.store.save_conversation(project)
+            for child in self.store.list_conversations("code", include_archived=True):
+                if child.get("project_id") == project_id:
+                    child["workspace"] = chosen
+                    self.store.save_conversation(child)
         self.conv["workspace"] = chosen
         self.store.save_conversation(self.conv)
         self._set_conversation(self.conv)
@@ -707,6 +933,14 @@ class CodeAgentPanel(tk.Frame):
         resolved = str(Path(chosen).resolve())
         if resolved not in self.extra_dirs:
             self.extra_dirs.append(resolved)
+            project_id = str(self.conv.get("project_id") or "")
+            if not project_id and (self.conv.get("is_project") or "is_project" not in self.conv):
+                project_id = self.conv["id"]
+            if project_id:
+                for conversation in self.store.list_conversations("code", include_archived=True):
+                    if conversation["id"] == project_id or conversation.get("project_id") == project_id:
+                        conversation["extra_dirs"] = list(self.extra_dirs)
+                        self.store.save_conversation(conversation)
             self.conv["extra_dirs"] = list(self.extra_dirs)
             self.store.save_conversation(self.conv)
             from gd_core.coding_tools import set_extra_dirs
@@ -719,10 +953,13 @@ class CodeAgentPanel(tk.Frame):
     def refresh_changes(self):
         self.change_tree.delete(*self.change_tree.get_children())
         for change in self.context.workspace.tracker.changes:
-            self.change_tree.insert("", "end", iid=change.id, values=(change.status, change.operation, change.path))
+            self.change_tree.insert("", "end", iid=change.id, values=(change.status, change.operation, change.path), tags=(change.status,))
         if not self.context.workspace.tracker.changes:
+            self.diff_text.configure(state=tk.NORMAL)
             self.diff_text.delete("1.0", tk.END)
             self.diff_text.insert(tk.END, self._text("code_no_changes"))
+            self.diff_text.configure(state=tk.DISABLED)
+        self._refresh_tab_badges()
 
     def show_selected_diff(self, _event=None):
         selection = self.change_tree.selection()
@@ -769,6 +1006,7 @@ class CodeAgentPanel(tk.Frame):
         self.activity_progress["value"] = data["progress"] * 100
         self.plan_progress_label.configure(text=f"{data['completed']} / {data['total']}")
         self.task_var.set(data["request"] or self._text("code_no_task"))
+        self._refresh_tab_badges()
 
     def refresh_overview(self):
         try:
@@ -809,7 +1047,9 @@ class CodeAgentPanel(tk.Frame):
             if event.get("tool") in {"run_terminal_command", "start_terminal", "git_status"}:
                 status = "passed" if result.get("status") == "SUCCESS" else "failed"
                 self.build_var.set(self._text("code_build_test") + f": {status}")
+                self._refresh_terminal_status()
         elif kind == "terminal_output":
+            self._refresh_terminal_status()
             session_id = event.get("session_id")
             pane = self.terminal_panes.get(session_id)
             if pane is None:
@@ -852,6 +1092,11 @@ class CodeAgentPanel(tk.Frame):
         if self.is_busy:
             self.status_var.set(self._text("code_busy_wait"))
             return
+        if conversation_id is None:
+            conv = self.store.create_conversation("code", title=self._text("code_new_chat"), workspace="")
+            self._set_conversation(conv)
+            self._refresh_all()
+            return
         conv = self.store.load_conversation(conversation_id)
         if conv is not None and conv.get("type") == "code":
             self._set_conversation(conv)
@@ -860,7 +1105,53 @@ class CodeAgentPanel(tk.Frame):
     def on_new_project(self):
         if self.is_busy:
             return
-        conv = self.store.create_conversation("code", title=self._text("sidebar_new_project"), workspace=str(self.context.workspace.root))
+        chosen = filedialog.askopenfilename(
+            parent=self,
+            title=self._text("code_select_project_file"),
+            initialdir=str(self.context.workspace.root),
+        )
+        if not chosen:
+            return
+        workspace = str(Path(chosen).resolve().parent)
+        title = Path(workspace).name or self._text("sidebar_new_project")
+        conv = self.store.create_conversation(
+            "code", title=title, workspace=workspace, is_project=True,
+        )
+        conv["permission_mode"] = self.settings.get("permission_mode", "project_autonomous")
+        self.store.save_conversation(conv)
+        self._set_conversation(conv)
+        self._refresh_all()
+
+    def on_start_default_chat(self):
+        if self.is_busy:
+            return
+        if not (self.conv or {}).get("workspace") and not (self.conv or {}).get("messages"):
+            self.input_box.focus_set()
+            return
+        conv = self.store.create_conversation("code", title=self._text("code_new_chat"), workspace="", is_project=False)
+        conv["permission_mode"] = self.settings.get("permission_mode", "project_autonomous")
+        self.store.save_conversation(conv)
+        self._set_conversation(conv)
+        self._refresh_all()
+        self.input_box.focus_set()
+
+    def on_new_chat(self):
+        if self.is_busy or self.conv is None:
+            return
+        project_id = str(self.conv.get("project_id") or "")
+        if not project_id and (self.conv.get("is_project") or "is_project" not in self.conv):
+            project_id = self.conv["id"]
+        conv = self.store.create_conversation(
+            "code",
+            title=self._text("code_new_chat"),
+            workspace=self.conv.get("workspace") or "",
+            extra_dirs=list(self.extra_dirs),
+            project_id=project_id,
+            is_project=False,
+        )
+        conv["permission_mode"] = self._permission_mode()
+        conv["skills"] = list(self.active_skills)
+        self.store.save_conversation(conv)
         self._set_conversation(conv)
         self._refresh_all()
 
@@ -873,6 +1164,8 @@ class CodeAgentPanel(tk.Frame):
     def _persist_message(self, role, content):
         if self.conv:
             self.store.append_message(self.conv["id"], role, content)
+            if hasattr(self, "sidebar"):
+                self.sidebar.refresh()
 
     def refresh_transcript(self):
         self.transcript.configure(state=tk.NORMAL)
@@ -885,12 +1178,20 @@ class CodeAgentPanel(tk.Frame):
                 self._append_markdown_message(self._text("code_agent_name"), str(message.get("content", "")), "agent")
         if not (self.conv or {}).get("messages"):
             self._append_message(self._text("code_system"), self._text("code_welcome").format(workspace=self.context.workspace.root, model=self.model), "system")
+        self._refresh_quick_start()
+
+    def _refresh_quick_start(self):
+        if (self.conv or {}).get("messages"):
+            self.quick_start.pack_forget()
+        elif not self.quick_start.winfo_manager():
+            self.quick_start.pack(fill=tk.X, before=self.transcript)
 
     def _append_message(self, speaker, text, tag="agent"):
         self.transcript.configure(state=tk.NORMAL)
         if speaker:
             self.transcript.insert(tk.END, f"{speaker}:\n", tag)
-        self.transcript.insert(tk.END, f"{text}\n\n", tag)
+        insert_mentions(self.transcript, text, tag)
+        self.transcript.insert(tk.END, "\n\n")
         self.transcript.configure(state=tk.DISABLED)
         self.transcript.see(tk.END)
 
@@ -999,6 +1300,7 @@ class CodeAgentPanel(tk.Frame):
         request_text, binary_paths = prepare_message(prompt, files, debug=self.debug)
         self._append_message(self._text("code_you"), display, "user")
         self._persist_message("user", request_text)
+        self.quick_start.pack_forget()
         self._start_agent(request_text, binary_paths, files, plan_only=plan_only, read_only=read_only)
 
     def _start_agent(self, request_text, binary_paths, files, plan_only=False, read_only=False):
@@ -1067,7 +1369,7 @@ class CodeAgentPanel(tk.Frame):
 
 
 class CodeAgentGUI:
-    def __init__(self, client, model="gemini-3.5-flash-lite", start_dir=".", theme="dark", debug=False, lang="en", settings=None):
+    def __init__(self, client, model="gemini-3.5-flash-lite", start_dir=None, theme="dark", debug=False, lang="en", settings=None):
         self.root = tk.Tk()
         self.root.title(f"GD Assistant :: {get_text('mode_code', lang)}")
         self.root.geometry("1280x800")
@@ -1084,6 +1386,6 @@ class CodeAgentGUI:
         self.root.mainloop()
 
 
-def launch_coding_gui(client, model="gemini-3.5-flash-lite", start_dir=".", theme="dark", debug=False, lang="en", settings=None):
+def launch_coding_gui(client, model="gemini-3.5-flash-lite", start_dir=None, theme="dark", debug=False, lang="en", settings=None):
     app = CodeAgentGUI(client, model=model, start_dir=start_dir, theme=theme, debug=debug, lang=lang, settings=settings)
     app.run()

@@ -14,8 +14,9 @@ from gd_core.task_state import CheckpointStore, TaskPlan
 from gd_core.translations import get_text
 
 
-def launch_coding_cli(client, model="gemini-3.5-flash-lite", start_dir=".", debug=False, lang="en", settings=None):
+def launch_coding_cli(client, model="gemini-3.5-flash-lite", start_dir=None, debug=False, lang="en", settings=None):
     config = normalize_code_settings(settings)
+    workspace = start_dir or config.get("default_project_dir")
     task_id = f"cli_{os.getpid()}"
     plan = TaskPlan()
     stop_event = threading.Event()
@@ -30,7 +31,7 @@ def launch_coding_cli(client, model="gemini-3.5-flash-lite", start_dir=".", debu
         except (EOFError, KeyboardInterrupt):
             return False
 
-    context = configure_code_mode(start_dir, config, approval_callback=approve, event_callback=event, task_id=task_id, plan=plan)
+    context = configure_code_mode(workspace, config, approval_callback=approve, event_callback=event, task_id=task_id, plan=plan)
     checkpoints = CheckpointStore(context.workspace.root, config.get("checkpoint_retention", 20))
     context.checkpoints = checkpoints
     session = CodeAgentSession(

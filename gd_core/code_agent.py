@@ -10,6 +10,7 @@ from typing import Any, Callable
 from gd_core.coding_tools import configure_code_mode, get_context, get_registry
 from gd_core.project import ProjectIndex, inspect_project
 from gd_core.providers import GeminiProvider
+from gd_core.skills import SkillManager
 from gd_core.task_state import CheckpointStore, TaskPlan
 
 
@@ -42,6 +43,7 @@ class CodeAgentSession:
         checkpoints: CheckpointStore | None = None,
         plan: TaskPlan | None = None,
         approval_callback: Callable[[str, str], bool] | None = None,
+        skills: list[str] | None = None,
     ) -> None:
         self.client = client
         self.settings = dict(settings or {})
@@ -69,6 +71,8 @@ class CodeAgentSession:
                 plan=self.plan,
             )
         self.context = context
+        self.skill_manager = SkillManager(self.context.workspace.root)
+        self.skills = list(skills or [])
         self.context.event_callback = self._emit_event
         self.context.plan = self.plan
         self.context.checkpoints = self.checkpoints
@@ -120,6 +124,7 @@ class CodeAgentSession:
         reference_block = ""
         if self.extra_dirs:
             reference_block = "\nAdditional read-only reference directories:\n" + "\n".join(f"- {path}" for path in self.extra_dirs)
+        skill_block = self.skill_manager.render_active(self.skills)
         return (
             f"{CODING_SYSTEM_INSTRUCTION}\n\n"
             f"Active Workspace Root: {self.context.workspace.root}\n"
@@ -127,7 +132,12 @@ class CodeAgentSession:
             f"Maximum agent rounds: {self.settings.get('max_iterations', 20)}"
             f"{reference_block}\n\n"
             f"{project_block}"
+            f"{skill_block}"
         )
+
+    def set_skills(self, skills: list[str]) -> None:
+        self.skills = list(skills)
+        self.rebuild_config()
 
     def rebuild_config(self) -> None:
         self.provider.model = self.model
@@ -205,6 +215,8 @@ class CodeAgentSession:
         streamed: list[str] = []
         final_text = ""
         instruction = self.system_instruction
+        mentioned = [skill_id for skill_id in self.skill_manager.mentions(user_prompt) if skill_id not in self.skills]
+        instruction += self.skill_manager.render_active(mentioned)
         if plan_only:
             instruction += "\nPlanning-only request: call create_plan with concrete steps. Do not edit files or run commands."
 

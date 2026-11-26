@@ -3,7 +3,33 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import Any
+
+from gd_core.translations import get_text
+
+
+def default_workspace_dir() -> Path:
+    return Path.home() / "Documents"
+
+
+PERMISSION_LABEL_KEYS = {
+    "supervised": "code_mode_supervised",
+    "project_autonomous": "code_mode_autonomous",
+    "advanced": "code_mode_advanced",
+}
+
+
+def permission_mode_label(mode: str, lang: str) -> str:
+    return get_text(PERMISSION_LABEL_KEYS.get(mode, "code_mode_autonomous"), lang)
+
+
+def permission_mode_options(lang: str) -> list[str]:
+    return [permission_mode_label(mode, lang) for mode in PERMISSION_LABEL_KEYS]
+
+
+def permission_mode_from_label(label: str, lang: str) -> str:
+    return next((mode for mode in PERMISSION_LABEL_KEYS if permission_mode_label(mode, lang) == label), "project_autonomous")
 
 
 DEFAULT_CODE_SETTINGS: dict[str, Any] = {
@@ -17,7 +43,10 @@ DEFAULT_CODE_SETTINGS: dict[str, Any] = {
     "allow_dependency_install": True,
     "editor_font_size": 11,
     "tab_size": 4,
-    "default_project_dir": ".",
+    "default_project_dir": str(default_workspace_dir()),
+    "explorer_visible": True,
+    "activity_visible": True,
+    "terminal_expanded": True,
 }
 
 
@@ -41,6 +70,9 @@ def normalize_code_settings(value: Any) -> dict[str, Any]:
     settings["tab_size"] = _bounded_int(settings.get("tab_size"), 4, 2, 8)
     settings["auto_index"] = bool(settings.get("auto_index", True))
     settings["allow_dependency_install"] = bool(settings.get("allow_dependency_install", True))
+    settings["explorer_visible"] = bool(settings.get("explorer_visible", True))
+    settings["activity_visible"] = bool(settings.get("activity_visible", True))
+    settings["terminal_expanded"] = bool(settings.get("terminal_expanded", True))
     ignored = settings.get("ignored_dirs") or []
     if isinstance(ignored, str):
         ignored = [item.strip() for item in ignored.splitlines() if item.strip()]
@@ -49,6 +81,8 @@ def normalize_code_settings(value: Any) -> dict[str, Any]:
     if isinstance(approved, str):
         approved = [item.strip() for item in approved.splitlines() if item.strip()]
     settings["approved_patterns"] = [str(item).strip() for item in approved if str(item).strip()]
-    default_dir = str(settings.get("default_project_dir") or ".").strip()
-    settings["default_project_dir"] = default_dir if os.path.isdir(default_dir) else "."
+    default_dir = str(settings.get("default_project_dir") or "").strip()
+    if default_dir in {"", "."}:
+        default_dir = str(default_workspace_dir())
+    settings["default_project_dir"] = default_dir if os.path.isdir(default_dir) else str(default_workspace_dir())
     return settings

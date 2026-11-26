@@ -57,6 +57,8 @@ class ConversationStore:
         title: str = "",
         workspace: str | os.PathLike[str] | None = None,
         extra_dirs: list[str] | None = None,
+        project_id: str = "",
+        is_project: bool = False,
     ) -> dict[str, Any]:
         now = _now()
         conversation: dict[str, Any] = {
@@ -68,6 +70,8 @@ class ConversationStore:
             "updated_at": now,
             "workspace": str(workspace) if workspace else "",
             "extra_dirs": list(extra_dirs or []),
+            "project_id": project_id,
+            "is_project": is_project,
             "titled": False,
             "messages": [],
         }
@@ -122,6 +126,11 @@ class ConversationStore:
             self._path(conv_id).unlink()
         except OSError:
             pass
+
+    def delete_project(self, project_id: str) -> None:
+        for conversation in self.list_conversations("code", include_archived=True):
+            if conversation["id"] == project_id or conversation.get("project_id") == project_id:
+                self.delete_conversation(conversation["id"])
 
     def convert_to_code(self, conv_id: str, workspace: str | os.PathLike[str]) -> None:
         """One-way conversion: a chat becomes a Code project and never reverts."""

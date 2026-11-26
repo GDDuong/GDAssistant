@@ -18,9 +18,10 @@ import time
 
 from gd_core.attachments import display_summary, load_binary_parts, prepare_message
 from gd_core.conversations import ConversationStore
+from gd_core.skills import SkillManager
 from gd_core.translations import get_text
 from ui_tk.attach_strip import AttachStrip
-from ui_tk.mdrender import configure_tags, insert_markdown, strip_markdown
+from ui_tk.mdrender import configure_tags, insert_markdown, insert_mentions, strip_markdown
 from ui_tk.sidebar import ConversationSidebar
 from ui_tk.themes import get_theme
 from ui_tk.tray import TrayDaemon
@@ -74,14 +75,17 @@ DEFAULT_LANGUAGE = "en"
 DEFAULT_PERSONALITY = ""
 DEFAULT_THEME = "light"
 COMMON_GEMINI_MODELS = (
+    "gemini-4-hydrogen",
+    "gemini-4-argon",
+    "gemini-4-neon",
+    "gemini-4-carbon",
     "gemini-3.8-flash",
     "gemini-3.6-flash",
-    "gemini-3.5-flash",
     "gemini-3.5-flash-lite",
+    "gemini-3.1-flash-lite",
     "gemini-3.1-pro-preview",
-    "gemini-2.5-flash",
+    "gemini-3-flash-preview",
     "gemini-2.5-flash-lite",
-    "gemini-2.5-pro",
 )
 
 def get_system_instruction(personality: str) -> str:
@@ -966,6 +970,7 @@ class AssistantSession:
         model: str = DEFAULT_MODEL,
         personality: str = "",
         seed_messages: list[dict[str, str]] | None = None,
+        skills: list[str] | None = None,
     ) -> None:
         from google.genai import types
         saved_memory = load_memory()
@@ -976,8 +981,11 @@ class AssistantSession:
         self.client = client
         self.model = model
         self.types = types
+        self.skill_manager = SkillManager()
+        self.skills = list(skills or [])
+        self.base_system_instruction = get_system_instruction(personality) + memory_prompt
         self.config = types.GenerateContentConfig(
-            system_instruction=get_system_instruction(personality) + memory_prompt,
+            system_instruction=self.base_system_instruction + self.skill_manager.render_active(self.skills),
             tools=[types.Tool(function_declarations=TOOL_DECLARATIONS)],
             automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
         )
@@ -989,9 +997,22 @@ class AssistantSession:
             for message in (seed_messages or [])
         ]
 
+    def set_skills(self, skills: list[str]) -> None:
+        self.skills = list(skills)
+        self.config.system_instruction = self.base_system_instruction + self.skill_manager.render_active(self.skills)
+
+    def _mention_block(self, message: str) -> str:
+        mentioned = [skill_id for skill_id in self.skill_manager.mentions(message) if skill_id not in self.skills]
+        return self.skill_manager.render_active(mentioned)
+
     def ask(self, message: str) -> str:
         self.history.append(self.types.Content(role="user", parts=[self.types.Part(text=message)]))
-        return send_message_with_tools(self.client, self.model, self.config, self.history)
+        original = self.config.system_instruction
+        self.config.system_instruction = original + self._mention_block(message)
+        try:
+            return send_message_with_tools(self.client, self.model, self.config, self.history)
+        finally:
+            self.config.system_instruction = original
 
     def ask_stream(
         self,
@@ -1002,14 +1023,19 @@ class AssistantSession:
     ) -> str:
         parts = [self.types.Part(text=message), *(extra_parts or [])]
         self.history.append(self.types.Content(role="user", parts=parts))
-        return send_message_with_tools(
-            self.client,
-            self.model,
-            self.config,
-            self.history,
-            on_text=on_text,
-            stop_event=stop_event,
-        )
+        original = self.config.system_instruction
+        self.config.system_instruction = original + self._mention_block(message)
+        try:
+            return send_message_with_tools(
+                self.client,
+                self.model,
+                self.config,
+                self.history,
+                on_text=on_text,
+                stop_event=stop_event,
+            )
+        finally:
+            self.config.system_instruction = original
 
 def chat_loop(client: Any, model: str, personality: str = "") -> None:
     session = AssistantSession(client, model, personality)
@@ -1381,8 +1407,10 @@ def launch_chat_ui(
         tk.Button(default_dir_row, text=get_text("code_browse", lang), command=browse_default_project, bg=colors["button"], fg=colors["foreground"], activebackground=colors["button_active"], activeforeground=colors["foreground"], relief=tk.FLAT, bd=0, padx=8).pack(side=tk.LEFT)
 
         section_label(code_page, get_text("code_permission_mode", lang))
-        permission_var = tk.StringVar(value=code_cfg.get("permission_mode") or "project_autonomous")
-        permission_combo = ttk.Combobox(code_page, width=58, textvariable=permission_var, state="readonly", values=("supervised", "project_autonomous", "advanced"), style="GDAssistant.TCombobox")
+        from gd_core.code_settings import permission_mode_from_label, permission_mode_label, permission_mode_options
+
+        permission_var = tk.StringVar(value=permission_mode_label(code_cfg.get("permission_mode") or "project_autonomous", lang))
+        permission_combo = ttk.Combobox(code_page, width=58, textvariable=permission_var, state="readonly", values=permission_mode_options(lang), style="GDAssistant.TCombobox")
         permission_combo.pack(anchor="w", pady=(3, 8))
 
         numeric_row = tk.Frame(code_page, bg=colors["background"])
@@ -1396,9 +1424,9 @@ def launch_chat_ui(
         )):
             cell = tk.Frame(numeric_row, bg=colors["background"])
             cell.grid(row=0, column=column, padx=(0, 10), sticky="w")
-            tk.Label(cell, text=get_text(label_key, lang), bg=colors["background"], fg=colors["foreground"], font=("Arial", 8), wraplength=110, justify=tk.LEFT).pack(anchor="w")
+            tk.Label(cell, text=get_text(label_key, lang), bg=colors["background"], fg=colors["foreground"], font=("Arial", 8), height=2, wraplength=100, justify=tk.LEFT, anchor="w").pack(anchor="w", fill=tk.X)
             value = tk.StringVar(value=str(code_cfg.get(key, default)))
-            ttk.Spinbox(cell, from_=1, to=3600, textvariable=value, width=8, style="GDAssistant.TCombobox").pack(anchor="w", pady=(2, 0))
+            tk.Entry(cell, width=8, textvariable=value, justify=tk.CENTER, **entry_options).pack(anchor="w", pady=(2, 0))
             numeric_row.grid_columnconfigure(column, weight=1)
             if key == "max_iterations":
                 iterations_var = value
@@ -1437,7 +1465,7 @@ def launch_chat_ui(
                 return
             try:
                 new_code_mode = {
-                    "permission_mode": permission_var.get(),
+                    "permission_mode": permission_mode_from_label(permission_var.get(), lang),
                     "max_iterations": int(iterations_var.get()),
                     "command_timeout": int(timeout_var.get()),
                     "checkpoint_retention": int(retention_var.get()),
@@ -1496,6 +1524,7 @@ def launch_chat_ui(
             session = AssistantSession(
                 client, model, personality,
                 seed_messages=(current_conv or {}).get("messages"),
+                skills=(current_conv or {}).get("skills") or [],
             )
             theme = theme_var.get()
             apply_chat_theme(theme)
@@ -1558,7 +1587,8 @@ def launch_chat_ui(
         nonlocal current_conv, session
         current_conv = conv
         session = AssistantSession(
-            client, model, personality, seed_messages=conv.get("messages") or []
+            client, model, personality, seed_messages=conv.get("messages") or [],
+            skills=[str(item) for item in conv.get("skills") or []],
         )
         transcript.configure(state=tk.NORMAL)
         transcript.delete("1.0", tk.END)
@@ -1570,6 +1600,8 @@ def launch_chat_ui(
             else:
                 add_markdown_message("GD", content)
         chat_sidebar.set_current(conv["id"])
+        if "skills_button" in locals():
+            refresh_skill_button()
 
     def start_new_chat() -> None:
         conv = store.create_conversation("chat", title=get_text("sidebar_new_chat", lang))
@@ -1664,7 +1696,7 @@ def launch_chat_ui(
         highlightcolor=colors["accent"],
         font=("Segoe UI", 10),
     )
-    transcript.grid(row=0, column=0, columnspan=4, sticky="nsew")
+    transcript.grid(row=0, column=0, columnspan=5, sticky="nsew")
     configure_tags(transcript, colors)
 
     # The plus button sits left of the text box and queues files for the next
@@ -1691,6 +1723,10 @@ def launch_chat_ui(
         highlightcolor=colors["accent"],
     )
     message_box.grid(row=1, column=1, sticky="ew", pady=(12, 0))
+    from ui_tk.skill_dialog import SkillAutocomplete
+    from ui_tk.tooltip import Tooltip
+
+    skill_autocomplete = SkillAutocomplete(message_box, lambda: session.skill_manager.discover(), colors)
 
     send_button = tk.Button(
         chat_frame,
@@ -1702,6 +1738,16 @@ def launch_chat_ui(
     )
     send_button.grid(row=1, column=2, sticky="e", padx=(8, 0), pady=(12, 0))
 
+    skills_button = tk.Button(
+        chat_frame,
+        text=get_text("skills_title", lang),
+        bg=colors["button"],
+        fg=colors["foreground"],
+        activebackground=colors["button_active"],
+        activeforeground=colors["foreground"],
+    )
+    skills_button.grid(row=1, column=3, sticky="e", padx=(6, 0), pady=(12, 0))
+
     mic_button = tk.Button(
         chat_frame,
         text=get_text("btn_voice", lang),
@@ -1711,7 +1757,7 @@ def launch_chat_ui(
         activebackground=colors["button_active"],
         activeforeground=colors["foreground"],
     )
-    mic_button.grid(row=1, column=3, sticky="e", padx=(6, 0), pady=(12, 0))
+    mic_button.grid(row=1, column=4, sticky="e", padx=(6, 0), pady=(12, 0))
 
     attach_strip = AttachStrip(
         chat_frame,
@@ -1729,7 +1775,7 @@ def launch_chat_ui(
         bg=colors["background"],
         fg=colors["foreground"],
     )
-    status_label.grid(row=3, column=0, columnspan=4, sticky="ew", pady=(6, 0))
+    status_label.grid(row=3, column=0, columnspan=5, sticky="ew", pady=(6, 0))
 
     chat_frame.columnconfigure(1, weight=1)
     chat_frame.rowconfigure(0, weight=1)
@@ -1737,7 +1783,7 @@ def launch_chat_ui(
     def refresh_attachments() -> None:
         if pending_files:
             attach_strip.refresh(pending_files)
-            attach_strip.grid(row=2, column=0, columnspan=4, sticky="w", pady=(4, 0))
+            attach_strip.grid(row=2, column=0, columnspan=5, sticky="w", pady=(4, 0))
         else:
             attach_strip.grid_remove()
 
@@ -1762,9 +1808,41 @@ def launch_chat_ui(
 
     attach_button.configure(command=open_attach_dialog)
 
+    def skill_tooltip_text() -> str:
+        active = set((current_conv or {}).get("skills") or [])
+        names = [skill.name for skill in session.skill_manager.discover() if skill.id in active]
+        return "\n".join(names) if names else get_text("skills_empty", lang)
+
+    def refresh_skill_button() -> None:
+        active_ids = (current_conv or {}).get("skills") or []
+        skills_button.configure(
+            text=get_text("skills_count", lang).format(count=len(active_ids)),
+            highlightbackground=colors["accent"] if active_ids else colors["border"],
+            highlightcolor=colors["accent"],
+            highlightthickness=1 if active_ids else 0,
+        )
+
+    def open_skills_dialog() -> None:
+        from ui_tk.skill_dialog import SkillDialog
+
+        def changed(active_ids):
+            if current_conv:
+                current_conv["skills"] = list(active_ids)
+                store.save_conversation(current_conv)
+            session.set_skills(active_ids)
+            refresh_skill_button()
+
+        SkillDialog(root, None, list((current_conv or {}).get("skills") or []), lang, changed, colors=colors)
+
+    skills_button.configure(command=open_skills_dialog)
+    Tooltip(skills_button, skill_tooltip_text)
+    refresh_skill_button()
+
     def add_message(speaker: str, text: str) -> None:
         transcript.configure(state=tk.NORMAL)
-        transcript.insert(tk.END, f"{speaker}: {text}\n\n")
+        transcript.insert(tk.END, f"{speaker}: ")
+        insert_mentions(transcript, text)
+        transcript.insert(tk.END, "\n\n")
         transcript.configure(state=tk.DISABLED)
         transcript.see(tk.END)
 
@@ -1782,6 +1860,7 @@ def launch_chat_ui(
         send_button.configure(state=state)
         mic_button.configure(state=state)
         attach_button.configure(state=state)
+        skills_button.configure(state=state)
 
     stream_pieces: list[str] = []
     stream_render_job: str | None = None
@@ -1879,6 +1958,12 @@ def launch_chat_ui(
             activeforeground=colors["foreground"],
         )
         attach_button.configure(
+            bg=colors["button"],
+            fg=colors["foreground"],
+            activebackground=colors["button_active"],
+            activeforeground=colors["foreground"],
+        )
+        skills_button.configure(
             bg=colors["button"],
             fg=colors["foreground"],
             activebackground=colors["button_active"],
@@ -2077,12 +2162,12 @@ def launch_chat_ui(
                 root,
                 client,
                 model=code_model,
-                start_dir=code_settings.get("default_project_dir") or os.getcwd(),
                 theme=theme,
                 debug=DEBUG_CONSOLE,
                 lang=lang,
                 conversation_id=conversation_id,
                 settings=code_settings,
+                on_settings_change=lambda updated: save_app_config({"code_mode": updated}),
             )
             code_panel.bind("<<CodeSettings>>", lambda _e: open_settings_dialog())
         elif conversation_id:
@@ -2210,7 +2295,7 @@ def main() -> int:
     parser.add_argument("--voice", action="store_true", help="start in terminal voice-only mode")
     parser.add_argument("--firstboot", action="store_true", help="force the first-time setup wizard to run")
     parser.add_argument("--code", action="store_true", help="start in Claude Code-style interactive programming mode")
-    parser.add_argument("--workspace", type=str, default=".", help="initial workspace folder for code mode")
+    parser.add_argument("--workspace", type=str, default=None, help="initial workspace folder for code mode")
     parser.add_argument("--gui", action="store_true", help="launch graphical interface (can be combined with --code)")
     parser.add_argument("--codegui", action="store_true", help="direct shortcut to launch Coding Agent GUI")
     parser.add_argument("--model", type=str, default=None, help="override the Gemini model name")

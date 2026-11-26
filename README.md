@@ -23,19 +23,22 @@ Gemini is the **brain**; GD Assistant is the **local hands**. The application ke
 
 ### Chat Mode
 
-The default Windows interface includes a conversation view, text input, a voice button, Settings, and a Mode menu for switching to Code Mode. It can remain available from the Windows system tray.
+The default Windows interface includes a conversation view, text input, a voice button, Settings, and a Mode menu for switching to Code Mode. It can remain available from the Windows system tray. Use **Skills** beside the input to enable portable `SKILL.md` instruction packs or create your own; enabled skills persist per chat and never expand tool permissions.
 
 ### Code Mode
 
-Code Mode is a lightweight project-aware coding environment. Select **Mode → Code**, choose a project directory, and describe a task in natural language. The agent can inspect the project, create a visible plan, edit multiple files, run builds/tests, investigate real failures, and verify its changes.
+Code Mode is a lightweight project-aware coding environment. Select **Mode → Code**, create a project by choosing any file inside its folder, and describe a task in natural language. The agent can inspect the project, create a visible plan, edit multiple files, run builds/tests, investigate real failures, and verify its changes.
+
+The history sidebar groups multiple chats under each project, with rename/archive/delete controls and shared workspace/reference folders. You can also start a standalone Code chat without a project; it uses the configurable default workspace (Documents by default).
 
 The interface includes:
 
 - **Project Explorer** with folder tree, filename search, recent files, and project switching.
 - **Editor** with line numbers, lightweight syntax highlighting, safe save, and revert.
 - **Changes** with unified diffs, per-change accept/reject, and undo that refuses to overwrite external edits.
-- **Terminal dock** with live stdout/stderr, exit status, Stop, multiple sessions, timeouts, and permission checks.
+- **Terminal dock** with live stdout/stderr, exit status, Stop, multiple sessions, timeouts, permission checks, and a collapse control; workspace and terminal tabs include hover descriptions.
 - **Plan / Overview / Agent Activity** showing progress, detected tooling, commands, files, and errors.
+- **Skills** for enabling project/user `SKILL.md` packs or creating new ones without leaving Code Mode.
 - **Checkpoints** so `/continue` can resume interrupted work.
 
 Code Mode is language-agnostic. It detects common Python, Node, Java/Gradle/Maven, Rust, Go, .NET, C/C++, CMake, Flutter, PHP, Ruby, and other projects from their real manifests and files.
@@ -248,9 +251,10 @@ Run the headless compatibility and Code Mode suites:
 ```powershell
 python test_config_smoke.py
 python test_code_mode.py
+python test_skills.py
 ```
 
-The Code Mode suite uses temporary projects for workspace-boundary, snapshot/undo, terminal, project-detection, Minecraft-profile, agent-loop, checkpoint, and IDE smoke checks.
+The Code Mode suite uses temporary projects for workspace-boundary, snapshot/undo, terminal, project-detection, Minecraft-profile, agent-loop, checkpoint, and IDE smoke checks. The skill suite covers portable skill discovery, creation, agent injection, project chat grouping, and default workspace/permission labels.
 
 ## Project Status
 

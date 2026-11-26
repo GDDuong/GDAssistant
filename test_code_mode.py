@@ -15,8 +15,9 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from gd_core.code_agent import CodeAgentSession
 from gd_core.code_commands import CodeCommandRouter
-from gd_core.code_settings import normalize_code_settings
+from gd_core.code_settings import normalize_code_settings, permission_mode_label
 from gd_core.coding_tools import configure_code_mode, get_registry
+from gd_core.conversations import ConversationStore
 from gd_core.project import ProjectIndex, inspect_project, minecraft_audit
 from gd_core.terminal import ExecutionPolicy, TerminalManager
 from gd_core.workspace import Workspace
@@ -243,6 +244,125 @@ class SettingsTests(unittest.TestCase):
 
 
 class UiTests(unittest.TestCase):
+    def test_skill_autocomplete_requires_whitespace(self):
+        try:
+            import tkinter as tk
+            from gd_core.skills import SkillManager
+            from ui_tk.skill_dialog import SkillAutocomplete
+            from ui_tk.themes import get_theme
+        except (ImportError, tk.TclError):
+            self.skipTest("Tk display is unavailable")
+        with tempfile.TemporaryDirectory(prefix="gd_skill_complete_") as folder:
+            manager = SkillManager(folder, Path(folder) / "user")
+            manager.create("helper", "Helpers", "Inspect first.")
+            root = tk.Tk()
+            root.withdraw()
+            try:
+                entry = tk.Entry(root)
+                entry.pack()
+                autocomplete = SkillAutocomplete(entry, manager.discover, get_theme("light"))
+                entry.insert(0, "mail@helper")
+                autocomplete._refresh()
+                self.assertIsNone(autocomplete.window)
+                entry.delete(0, tk.END)
+                entry.insert(0, "@hel")
+                autocomplete._refresh()
+                self.assertIsNotNone(autocomplete.window)
+                autocomplete._choose()
+                self.assertEqual(entry.get(), "@helper ")
+            finally:
+                root.destroy()
+
+    def test_p1_p2_ui_state_badges_and_mentions(self):
+        try:
+            import tkinter as tk
+            from ui_tk.code_gui import CodeAgentPanel
+            from ui_tk.mdrender import configure_tags, insert_mentions
+            from ui_tk.themes import get_theme
+        except (ImportError, tk.TclError):
+            self.skipTest("Tk display is unavailable")
+        with tempfile.TemporaryDirectory(prefix="gd_ui_polish_") as folder:
+            saved = []
+            root = tk.Tk()
+            root.withdraw()
+            try:
+                panel = CodeAgentPanel(
+                    root, object(), start_dir=folder,
+                    settings={"explorer_visible": False, "activity_visible": False, "terminal_expanded": False},
+                    on_settings_change=saved.append,
+                )
+                self.assertEqual(panel.explorer.winfo_manager(), "")
+                self.assertEqual(panel.activity.winfo_manager(), "")
+                self.assertEqual(panel.terminal_body.winfo_manager(), "")
+                panel.toggle_explorer()
+                self.assertTrue(saved[-1]["explorer_visible"])
+                self.assertTrue(panel.quick_start.winfo_manager())
+                panel.plan.set_steps("Demo", ["Inspect", "Change"])
+                panel.refresh_plan()
+                self.assertIn("0/2", panel.tabs.tab(panel.plan_tab, "text"))
+                self.assertIn(folder, panel._project_tooltip())
+                preview = tk.Text(root)
+                configure_tags(preview, get_theme("light"))
+                insert_mentions(preview, "Use @helper")
+                self.assertTrue(preview.tag_ranges("md_mention"))
+            finally:
+                panel.terminals.close()
+                root.destroy()
+
+    def test_permission_mode_is_scoped_to_project(self):
+        try:
+            import tkinter as tk
+            from ui_tk.code_gui import CodeAgentPanel
+        except (ImportError, tk.TclError):
+            self.skipTest("Tk display is unavailable")
+        with tempfile.TemporaryDirectory(prefix="gd_ui_project_") as folder:
+            root_path = Path(folder)
+            other_path = root_path / "other"
+            other_path.mkdir()
+            store = ConversationStore(root_path / "history")
+            root = tk.Tk()
+            root.withdraw()
+            try:
+                panel = CodeAgentPanel(root, object(), start_dir=folder, store=store, settings={"default_project_dir": folder, "auto_index": False})
+                project_id = panel.conv["id"]
+                panel.permission_var.set(permission_mode_label("supervised", "en"))
+                self.assertEqual(store.load_conversation(project_id)["permission_mode"], "supervised")
+                panel.on_new_chat()
+                self.assertEqual(panel.context.policy.mode, "supervised")
+                self.assertEqual(panel.permission_combo.get(), permission_mode_label("supervised", "en"))
+                panel.permission_var.set(permission_mode_label("advanced", "en"))
+                self.assertEqual(store.load_conversation(project_id)["permission_mode"], "advanced")
+                self.assertEqual(panel.settings["permission_mode"], "project_autonomous")
+                other = store.create_conversation("code", title="Other", workspace=str(other_path), is_project=True)
+                panel._set_conversation(other)
+                self.assertEqual(panel.context.policy.mode, "project_autonomous")
+                self.assertEqual(store.load_conversation(other["id"])["permission_mode"], "project_autonomous")
+                self.assertEqual(panel.permission_combo.get(), permission_mode_label("project_autonomous", "en"))
+            finally:
+                panel.terminals.close()
+                root.destroy()
+
+    def test_skill_creator_is_separate_themed_popup(self):
+        try:
+            import tkinter as tk
+            from ui_tk.skill_dialog import SkillDialog
+            from ui_tk.themes import get_theme
+        except (ImportError, tk.TclError):
+            self.skipTest("Tk display is unavailable")
+        with tempfile.TemporaryDirectory(prefix="gd_skill_ui_") as folder:
+            root = tk.Tk()
+            root.withdraw()
+            try:
+                colors = get_theme("light")
+                dialog = SkillDialog(root, folder, [], "en", lambda _ids: None, colors=colors)
+                dialog._show_create()
+                self.assertIsNot(dialog.create_dialog, dialog)
+                self.assertEqual(dialog.create_dialog.cget("bg"), colors["background"])
+                dialog.create_dialog.destroy()
+                dialog.destroy()
+            finally:
+                root.destroy()
+
     def test_ide_shell_and_editor_round_trip(self):
         try:
             import tkinter as tk
@@ -258,6 +378,17 @@ class UiTests(unittest.TestCase):
                 panel = CodeAgentPanel(root, object(), start_dir=folder, settings={"default_project_dir": folder, "auto_index": False})
                 root.update_idletasks()
                 self.assertEqual(len(panel.tabs.tabs()), 5)
+                self.assertEqual(panel.conv["workspace"], folder)
+                self.assertTrue(panel.conv["is_project"])
+                self.assertEqual(panel.permission_combo.current(), 1)
+                self.assertEqual(panel.permission_combo.get(), permission_mode_label("project_autonomous", "en"))
+                self.assertTrue(hasattr(panel, "tab_tooltips"))
+                self.assertTrue(hasattr(panel, "skills_btn"))
+                panel.toggle_terminal()
+                self.assertFalse(panel._terminal_expanded)
+                self.assertEqual(panel.terminal_body.winfo_manager(), "")
+                panel.toggle_terminal()
+                self.assertTrue(panel._terminal_expanded)
                 panel.open_file(root_path / "main.py")
                 self.assertIn("def main", panel.editor.text.get("1.0", tk.END))
                 panel.editor.text.insert(tk.END, "\n# changed\n")

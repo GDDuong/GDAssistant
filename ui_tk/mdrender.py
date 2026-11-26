@@ -14,8 +14,10 @@ _INLINE_RE = re.compile(
     r"|(?P<bold>\*\*[^*\n]+\*\*)"
     r"|(?P<italic>\*[^*\n]+\*)"
     r"|(?P<link>\[[^\]\n]+\]\([^)\n]+\))"
+    r"|(?P<mention>(?<!\w)@[A-Za-z0-9][A-Za-z0-9_.-]*)"
 )
 _LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
+MENTION_RE = re.compile(r"(?<!\w)@[A-Za-z0-9][A-Za-z0-9_.-]*")
 
 
 def configure_tags(widget: Any, palette: dict[str, str], family: str = "Segoe UI", size: int = 10) -> None:
@@ -35,6 +37,22 @@ def configure_tags(widget: Any, palette: dict[str, str], family: str = "Segoe UI
         foreground=palette.get("accent", "#4f8cff"),
         underline=True,
     )
+    widget.tag_configure(
+        "md_mention",
+        foreground=palette.get("mention", "#9cdcfe"),
+        font=(family, size, "bold"),
+    )
+
+
+def insert_mentions(widget: Any, text: str, base_tag: str = "") -> None:
+    position = 0
+    for match in MENTION_RE.finditer(text):
+        if match.start() > position:
+            widget.insert(tk.END, text[position:match.start()], base_tag or ())
+        widget.insert(tk.END, match.group(0), (base_tag, "md_mention") if base_tag else "md_mention")
+        position = match.end()
+    if position < len(text):
+        widget.insert(tk.END, text[position:], base_tag or ())
 
 
 def insert_markdown(widget: Any, text: str, base_tag: str = "", index: Any = None) -> None:
@@ -64,6 +82,8 @@ def insert_markdown(widget: Any, text: str, base_tag: str = "", index: Any = Non
                 emit(piece[2:-2], "md_bold")
             elif match.group("italic"):
                 emit(piece[1:-1], "md_italic")
+            elif match.group("mention"):
+                emit(piece, "md_mention")
             else:
                 link = _LINK_RE.match(piece)
                 emit(link.group(1) if link else piece, "md_link")
