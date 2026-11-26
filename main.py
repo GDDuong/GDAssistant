@@ -23,7 +23,7 @@ from gd_core.translations import get_text
 from ui_tk.attach_strip import AttachStrip
 from ui_tk.mdrender import configure_tags, insert_markdown, insert_mentions, strip_markdown
 from ui_tk.sidebar import ConversationSidebar
-from ui_tk.themes import get_theme
+from ui_tk.themes import ACCENT_PRESETS, get_theme, is_hex_color
 from ui_tk.tray import TrayDaemon
 
 from gd_core.local_tools import (
@@ -481,6 +481,7 @@ def load_app_config() -> dict[str, Any]:
         "code_model": DEFAULT_CODE_MODEL,
         "share_chat_code_model": True,
         "theme": DEFAULT_THEME,
+        "accent_color": "",
         "hotkey": DEFAULT_HOTKEY,
         "hotkey_voice": DEFAULT_VOICE_HOTKEY,
         "hotkey_code": DEFAULT_CODE_HOTKEY,
@@ -1096,7 +1097,7 @@ def launch_chat_ui(
 
     session = AssistantSession(client, model, personality)
     voice_app: Any = None
-    colors = get_theme(theme)
+    colors = get_theme(theme, load_app_config().get("accent_color"))
 
     def warm_voice_model() -> None:
         """Preload optional speech components without delaying the interface."""
@@ -1368,6 +1369,21 @@ def launch_chat_ui(
         tk.Radiobutton(appearance, text=get_text("appearance_dark", lang), variable=theme_var, value="dark", **radio_options).pack(anchor="w")
         tk.Radiobutton(appearance, text=get_text("appearance_light", lang), variable=theme_var, value="light", **radio_options).pack(anchor="w", pady=(0, 12))
 
+        section_label(appearance, get_text("accent_color", lang))
+        accent_row = tk.Frame(appearance, bg=colors["background"])
+        accent_row.pack(anchor="w", fill=tk.X, pady=(3, 12))
+        accent_var = tk.StringVar(value=app_cfg.get("accent_color") or get_theme(theme_var.get())["accent"])
+        ttk.Combobox(accent_row, width=20, textvariable=accent_var, values=ACCENT_PRESETS, state="normal", style="GDAssistant.TCombobox").pack(side=tk.LEFT)
+
+        def pick_accent():
+            from tkinter import colorchooser
+
+            chosen = colorchooser.askcolor(color=accent_var.get(), parent=settings_win, title=get_text("accent_color", lang))
+            if chosen[1]:
+                accent_var.set(chosen[1])
+
+        tk.Button(accent_row, text=get_text("accent_pick", lang), command=pick_accent, bg=colors["button"], fg=colors["foreground"], activebackground=colors["button_active"], activeforeground=colors["foreground"], relief=tk.FLAT, bd=0, padx=8).pack(side=tk.LEFT, padx=(6, 0))
+
         section_label(appearance, get_text("language_label", lang))
         tk.Radiobutton(appearance, text="English", variable=lang_var, value="en", **radio_options).pack(anchor="w")
         tk.Radiobutton(appearance, text="Tiếng Việt", variable=lang_var, value="vi", **radio_options).pack(anchor="w")
@@ -1459,6 +1475,10 @@ def launch_chat_ui(
 
         def save_settings():
             nonlocal model, session, code_panel, theme, personality
+            accent_color = accent_var.get().strip()
+            if not is_hex_color(accent_color):
+                messagebox.showerror(get_text("settings_title", lang), get_text("accent_invalid", lang), parent=settings_win)
+                return
             new_key = key_entry.get().strip()
             if not new_key:
                 messagebox.showerror("Error", get_text("err_empty_key", lang), parent=settings_win)
@@ -1503,6 +1523,7 @@ def launch_chat_ui(
                 "code_model": code_model_var.get().strip() or DEFAULT_CODE_MODEL,
                 "share_chat_code_model": share_models_var.get(),
                 "theme": theme_var.get(),
+                "accent_color": accent_color,
                 "hotkey": new_hotkeys["open"],
                 "hotkey_voice": new_hotkeys["voice"],
                 "hotkey_code": new_hotkeys["code"],
@@ -1527,7 +1548,7 @@ def launch_chat_ui(
                 skills=(current_conv or {}).get("skills") or [],
             )
             theme = theme_var.get()
-            apply_chat_theme(theme)
+            apply_chat_theme(theme, accent_color)
             code_was_visible = code_panel is not None and bool(code_panel.winfo_manager())
             if code_panel is not None:
                 code_panel.destroy()
@@ -1917,10 +1938,10 @@ def launch_chat_ui(
             active_stop_event.set()
         status.set(get_text("status_stopping", lang))
 
-    def apply_chat_theme(theme_name: str) -> None:
+    def apply_chat_theme(theme_name: str, accent_color: str | None = None) -> None:
         """Apply the selected shared appearance to the active Chat widgets."""
         nonlocal colors
-        colors = get_theme(theme_name)
+        colors = get_theme(theme_name, accent_color)
         root.configure(bg=colors["background"])
         apply_ttk_theme(colors)
         apply_menu_theme(colors)
@@ -2167,6 +2188,7 @@ def launch_chat_ui(
                 lang=lang,
                 conversation_id=conversation_id,
                 settings=code_settings,
+                accent_color=current_config.get("accent_color"),
                 on_settings_change=lambda updated: save_app_config({"code_mode": updated}),
             )
             code_panel.bind("<<CodeSettings>>", lambda _e: open_settings_dialog())
@@ -2366,6 +2388,7 @@ def main() -> int:
                 debug=DEBUG_CONSOLE,
                 lang=lang,
                 settings=app_config.get("code_mode"),
+                accent_color=app_config.get("accent_color"),
             )
             return 0
         else:

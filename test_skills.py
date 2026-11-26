@@ -140,6 +140,17 @@ class HistoryTests(unittest.TestCase):
         self.assertIn("Supervised", label)
         self.assertEqual(permission_mode_from_label(label, "en"), "supervised")
 
+    def test_accent_override_preserves_theme_defaults(self):
+        from ui_tk.themes import get_theme, is_hex_color
+
+        self.assertEqual(get_theme("dark")["accent"], "#007acc")
+        custom = get_theme("dark", "#FF0000")
+        self.assertEqual(custom["accent"], "#ff0000")
+        self.assertEqual(custom["accent_active"], "#bf0000")
+        self.assertEqual(get_theme("dark", "invalid")["accent"], "#007acc")
+        self.assertTrue(is_hex_color("#007acc"))
+        self.assertFalse(is_hex_color("blue"))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

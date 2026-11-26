@@ -260,8 +260,8 @@ class TerminalPane(tk.Frame):
 
 
 class CodeAgentPanel(tk.Frame):
-    def __init__(self, parent, client, model="gemini-3.5-flash-lite", start_dir=None, theme="dark", debug=False, lang="en", conversation_id=None, store=None, settings=None, on_settings_change: Callable[[dict[str, Any]], None] | None = None):
-        self.colors = get_theme(theme)
+    def __init__(self, parent, client, model="gemini-3.5-flash-lite", start_dir=None, theme="dark", debug=False, lang="en", conversation_id=None, store=None, settings=None, on_settings_change: Callable[[dict[str, Any]], None] | None = None, accent_color: str | None = None):
+        self.colors = get_theme(theme, accent_color)
         super().__init__(parent, bg=self.colors["background"])
         self.client = client
         self.start_dir = Path(start_dir).expanduser() if start_dir else None
@@ -1369,13 +1369,13 @@ class CodeAgentPanel(tk.Frame):
 
 
 class CodeAgentGUI:
-    def __init__(self, client, model="gemini-3.5-flash-lite", start_dir=None, theme="dark", debug=False, lang="en", settings=None):
+    def __init__(self, client, model="gemini-3.5-flash-lite", start_dir=None, theme="dark", debug=False, lang="en", settings=None, accent_color: str | None = None):
         self.root = tk.Tk()
         self.root.title(f"GD Assistant :: {get_text('mode_code', lang)}")
         self.root.geometry("1280x800")
         self.root.minsize(980, 600)
-        self.root.configure(bg=get_theme(theme)["background"])
-        self.panel = CodeAgentPanel(self.root, client, model=model, start_dir=start_dir, theme=theme, debug=debug, lang=lang, settings=settings)
+        self.root.configure(bg=get_theme(theme, accent_color)["background"])
+        self.panel = CodeAgentPanel(self.root, client, model=model, start_dir=start_dir, theme=theme, debug=debug, lang=lang, settings=settings, accent_color=accent_color)
         self.panel.pack(fill=tk.BOTH, expand=True)
         self.panel.bind("<<CodeSettings>>", lambda _e: self._open_settings())
 
@@ -1386,6 +1386,6 @@ class CodeAgentGUI:
         self.root.mainloop()
 
 
-def launch_coding_gui(client, model="gemini-3.5-flash-lite", start_dir=None, theme="dark", debug=False, lang="en", settings=None):
-    app = CodeAgentGUI(client, model=model, start_dir=start_dir, theme=theme, debug=debug, lang=lang, settings=settings)
+def launch_coding_gui(client, model="gemini-3.5-flash-lite", start_dir=None, theme="dark", debug=False, lang="en", settings=None, accent_color=None):
+    app = CodeAgentGUI(client, model=model, start_dir=start_dir, theme=theme, debug=debug, lang=lang, settings=settings, accent_color=accent_color)
     app.run()

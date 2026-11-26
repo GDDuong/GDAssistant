@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Final
 
 THEMES: Final = {
@@ -40,6 +41,30 @@ THEMES: Final = {
 }
 
 
-def get_theme(name: str) -> dict[str, str]:
+ACCENT_PRESETS: Final = (
+    "#007acc",
+    "#0969da",
+    "#7c3aed",
+    "#db2777",
+    "#dc2626",
+    "#ea580c",
+    "#16a34a",
+    "#0891b2",
+)
+
+
+def is_hex_color(value: str) -> bool:
+    return re.fullmatch(r"#[0-9a-fA-F]{6}", str(value).strip()) is not None
+
+
+def get_theme(name: str, accent_color: str | None = None) -> dict[str, str]:
     """Return a known palette, falling back safely to dark mode."""
-    return THEMES.get(str(name).lower(), THEMES["dark"])
+    palette = dict(THEMES.get(str(name).lower(), THEMES["dark"]))
+    accent = str(accent_color or "").strip()
+    if is_hex_color(accent):
+        palette["accent"] = accent.lower()
+        red, green, blue = (int(accent[index:index + 2], 16) for index in (1, 3, 5))
+        palette["accent_active"] = "#{:02x}{:02x}{:02x}".format(
+            int(red * 0.75), int(green * 0.75), int(blue * 0.75)
+        )
+    return palette
