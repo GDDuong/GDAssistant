@@ -28,7 +28,7 @@ All notable changes to GD Assistant are documented here.
 
 ---
 
-## v0.5.1.1-ALPHA
+## v0.5.1.2-ALPHA
 
 ### Highlights
 
