@@ -258,8 +258,8 @@ The Code Mode suite uses temporary projects for workspace-boundary, snapshot/und
 
 ## Project Status
 
-**Current version:** `v0.5.3-BETA`
+**Current version:** `v0.6-BETA`
 
 GD Assistant is an active beta project on the road to v1.0. Features, supported Gemini models, local tools, and safety rules may evolve as the project is tested and improved.
 
-See [CHANGELOG.md](CHANGELOG.md) for v0.5.3-BETA release notes.
+See [CHANGELOG.md](CHANGELOG.md) for v0.6-BETA release notes.

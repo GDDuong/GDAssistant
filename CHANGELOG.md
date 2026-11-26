@@ -2,11 +2,14 @@
 
 All notable changes to GD Assistant are documented here.
 
-## Unreleased
+## v0.6-BETA
 
 ### Highlights
 
-- **Code Mode 2.0** — a project-aware coding workspace with reusable skills, grouped project chats, collapsible terminals, reviewable edits, plans, checkpoints, permission controls, and Minecraft mod commands.
+- **Code Mode 2.0** — pick a project folder and the assistant works inside it: reads your code, runs terminal commands you can watch and collapse, proposes edits you accept or reject one by one, keeps a visible plan, and takes checkpoints so changes can be undone. Each project gets its own permission mode, chats are grouped under the project, and Minecraft mod projects have their own commands.
+- **Skills** — reusable instruction packs you write once and call by name. Manage them in the Skills window, type `@` in Chat or Code to pick one from a popup, and the assistant follows it for that message only. Mentioned skills are highlighted in the conversation.
+- **Accent color** — swap the default blue for a preset, a color from the picker, or your own hex value; it applies across Chat and Code.
+- **Installers** — every release now comes as a portable one-file exe, a full offline installer, and a small web installer.
 
 ---
 
