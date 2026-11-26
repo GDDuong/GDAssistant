@@ -4,10 +4,6 @@ All notable changes to GD Assistant are documented here.
 
 ## Unreleased
 
-### Highlights
-
-- **Qt interface preview** — chat, menus, settings, and first-boot setup now use the new Qt interface, with adjustable window opacity, maximize/restore controls, and smoother high-refresh motion.
-
 ---
 
 ## v0.5.3-BETA
@@ -30,9 +26,21 @@ All notable changes to GD Assistant are documented here.
 
 ## v0.5.1.2-ALPHA
 
-### Highlights
+### Qt interface preview
 
-- **Voice orb popup** — during a voice conversation a small floating glass orb appears at the top of the screen: it pulses with the rainbow light while it listens, shows orbiting dots while it thinks, then presents the answer in a pill you can click to open in the app. Toggle it in Settings. This is an ALPHA preview of the new Qt interface, so expect it to change.
+- **Chat window rebuilt in Qt** — the glass frameless chat window now runs entirely on the new interface: sidebar with your chat history (new chat, rename, status, delete, archived view), formatted markdown replies, attachment chips, live streaming with a Stop button, and drag-and-drop files.
+- **Settings in Qt** — the settings dialog is now a Qt window with a category rail (Technical, Shortcuts, Voice, Appearance, Personality), matching the chat window's look, plus a new opacity slider for the glass.
+- **Menus in Qt** — the tray menu is now Qt-native with smooth entrance animations and reliable File/Mode tab clicks.
+- **First-boot wizard in Qt** — new users go through setup in the new interface (no glass, fully opaque), including the opacity slider.
+- **Window polish** — maximize/restore button (corners snap square and opaque when maximized), taskbar click minimizes again, sidebar collapse no longer drifts, and animation timing now follows your monitor's refresh rate for smoother motion.
+
+### Also in this build (merged from v0.5.2–v0.5.3)
+
+- Reorganized settings pages, global hotkeys for Voice (`ctrl+alt+v`) and Code (`ctrl+alt+c`) modes.
+- 13 new local tools: timers, window control, text files, web search read-aloud, clipboard, music and volume control, battery check.
+- **Voice orb popup** — the floating glass orb from v0.5.1.1 stays: rainbow pulse while listening, orbiting dots while thinking, answer pill you can click to open in the app. Toggle in Settings.
+- `--console` launch flag renamed to `--debug`.
+- This is an ALPHA preview of the Qt interface — expect rough edges and changes.
 
 ---
 
