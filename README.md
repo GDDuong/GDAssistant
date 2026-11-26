@@ -1,6 +1,6 @@
 # GD Assistant
 
-> A Windows desktop assistant powered by Google Gemini — currently in **v0.5.3-BETA**.
+> A Windows desktop assistant powered by Google Gemini — currently in **v0.6-BETA**.
 
 GD Assistant combines Gemini's reasoning with carefully scoped local tools. Use it for conversation, voice interaction, limited desktop assistance, persistent local memory, and workspace-focused coding help.
 
